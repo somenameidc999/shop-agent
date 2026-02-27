@@ -13,6 +13,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 
 import { getConfigForShop } from "../services/mcpConfig.server";
+import prisma from "../db.server";
 
 export interface McpServerConfig {
   readonly name: string;
@@ -21,6 +22,8 @@ export interface McpServerConfig {
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
   readonly enabled: boolean;
+  /** When set, only these tool names are exposed to the agent. */
+  readonly allowedTools?: readonly string[];
 }
 
 function parseMySqlUrl(connString: string): Record<string, string> {
@@ -72,7 +75,7 @@ export function cleanupGoogleCredsFile(shop: string): void {
 export async function getServerConfigs(
   shop: string,
 ): Promise<readonly McpServerConfig[]> {
-  const [postgres, mysql, google, airtable, /* s3, dropbox, */ email, ftp, customApi] =
+  const [postgres, mysql, google, airtable, /* s3, dropbox, */ email, ftp, customApi, shopRecord] =
     await Promise.all([
       getConfigForShop(shop, "postgres"),
       getConfigForShop(shop, "mysql"),
@@ -83,6 +86,10 @@ export async function getServerConfigs(
       getConfigForShop(shop, "email"),
       getConfigForShop(shop, "ftp"),
       getConfigForShop(shop, "custom-api"),
+      prisma.shop.findUnique({
+        where: { shop },
+        select: { accessToken: true },
+      }),
     ]);
 
   // Helper: a server is enabled only when the user toggled it on AND required fields exist
@@ -158,7 +165,7 @@ export async function getServerConfigs(
       name: "airtable",
       description: "Airtable CRUD operations and schema inspection",
       command: "npx",
-      args: ["-y", "@domdomegg/airtable-mcp-server"],
+      args: ["-y", "airtable-mcp-server"],
       env: {
         AIRTABLE_API_KEY: airtable?.fields.apiKey ?? "",
         AIRTABLE_BASE_ID: airtable?.fields.baseId ?? "",
@@ -201,6 +208,17 @@ export async function getServerConfigs(
         };
       })(),
       enabled: on(email, "emailAddress", "password", "imapHost"),
+      allowedTools: [
+        "search_emails",
+        "get_email",
+        "get_thread",
+        "download_attachment",
+        "list_emails",
+        "extract_contacts",
+        "reply_email",
+        "forward_email",
+        "mark_email",
+      ],
     },
     {
       name: "ftp",
@@ -231,6 +249,22 @@ export async function getServerConfigs(
         CUSTOM_API_KEY: customApi?.fields.apiKey ?? "",
       },
       enabled: on(customApi, "baseUrl"),
+    },
+    {
+      name: "shopify",
+      description:
+        "Shopify Admin API — products, orders, customers, inventory, and more",
+      command: "npx",
+      args: [
+        "tsx",
+        new URL("./servers/shopify/index.ts", import.meta.url).pathname,
+        "--shop",
+        shop,
+      ],
+      env: {
+        SHOPIFY_API_VERSION: "2025-10",
+      },
+      enabled: !!shopRecord?.accessToken,
     },
   ];
 }

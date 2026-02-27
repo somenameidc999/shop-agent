@@ -107,11 +107,17 @@ class McpManager {
 
     const { tools: serverTools } = await client.listTools();
 
-    const tools = serverTools.map((t) => ({
-      name: t.name,
-      description: t.description ?? "",
-      inputSchema: (t.inputSchema as Record<string, unknown>) ?? {},
-    }));
+    const allowSet = config.allowedTools
+      ? new Set(config.allowedTools)
+      : null;
+
+    const tools = serverTools
+      .filter((t) => !allowSet || allowSet.has(t.name))
+      .map((t) => ({
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: (t.inputSchema as Record<string, unknown>) ?? {},
+      }));
 
     this.servers.set(config.name, {
       name: config.name,

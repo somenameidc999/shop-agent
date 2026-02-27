@@ -18,14 +18,16 @@ const ICON_MAP: Record<string, string> = {
   filesystem: "folder",
   postgres: "database",
   mysql: "database",
-  "google-sheets": "page",
+  "google-sheets": "file",
   "google-drive": "folder",
-  "google-docs": "page",
+  "google-docs": "page-reference",
   airtable: "table",
   s3: "upload",
   dropbox: "folder",
   ftp: "download",
   "custom-api": "code",
+  "email": "email",
+  shopify: "store",
 };
 
 function formatName(name: string): string {
