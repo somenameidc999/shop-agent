@@ -17,7 +17,9 @@
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
-    "typecheck": "react-router typegen && tsc --noEmit"
+    "typecheck": "react-router typegen && tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts"
   },
   "type": "module",
   "engines": {
@@ -25,6 +27,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
+    "@ai-sdk/openai": "^3.0.31",
     "@ai-sdk/react": "^3.0.99",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@prisma/client": "^6.16.3",
@@ -41,7 +44,9 @@
     "prisma": "^6.16.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
     "react-router": "^7.12.0",
+    "remark-gfm": "^4.0.1",
     "vite-tsconfig-paths": "^5.1.4",
     "zod": "^4.3.6"
   },
@@ -52,8 +57,10 @@
     "@shopify/polaris-types": "^1.0.1",
     "@types/eslint": "^9.6.1",
     "@types/node": "^22.18.8",
+    "@types/pg": "^8.16.0",
     "@types/react": "^18.3.25",
     "@types/react-dom": "^18.3.7",
+    "@types/ssh2-sftp-client": "^9.0.6",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.1",
@@ -62,11 +69,15 @@
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^4.6.2",
+    "googleapis": "^171.4.0",
     "graphql-config": "^5.1.1",
+    "pg": "^8.19.0",
     "prettier": "^3.6.2",
+    "ssh2-sftp-client": "^12.0.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vite": "^6.3.6"
+    "vite": "^6.3.6",
+    "vitest": "^4.0.18"
   },
   "workspaces": {
     "packages": [

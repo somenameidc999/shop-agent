@@ -6,9 +6,10 @@
  * Reads CUSTOM_API_BASE_URL and CUSTOM_API_KEY from environment.
  */
 
+import { z } from "zod";
+import { debugLog } from "../../../utils/debugLog.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 
 const BASE_URL = process.env.CUSTOM_API_BASE_URL ?? "";
 const API_KEY = process.env.CUSTOM_API_KEY ?? "";
@@ -22,6 +23,18 @@ const server = new McpServer({
   name: "custom-api",
   version: "1.0.0",
 });
+
+function toJsonObject(text: string): unknown {
+  let parsed: unknown | undefined;
+  try {
+    // Validate it's valid JSON, then pass it through
+    parsed = JSON.parse(text);
+  } catch {
+    // Ignore
+  }
+
+  return parsed ?? text;
+}
 
 async function makeRequest(
   method: string,
@@ -52,7 +65,6 @@ async function makeRequest(
   });
 
   const responseText = await response.text();
-
   if (!response.ok) {
     return JSON.stringify({
       error: true,
@@ -69,75 +81,95 @@ async function makeRequest(
   }
 }
 
-server.tool(
+server.registerTool(
   "api_get",
-  "Make a GET request to the custom API",
   {
-    path: z.string().describe("API path (e.g., /users, /products/123)"),
-    query_params: z
-      .record(z.string(), z.string())
-      .optional()
-      .describe("Query parameters as key-value pairs"),
+    description: "Make a GET request to the custom API",
+    inputSchema: {
+      path: z.string().describe("API path (e.g., /users, /products/123)"),
+      query_params: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe("Query parameters as key-value pairs"),
+    },
   },
   async ({ path, query_params }) => ({
     content: [{ type: "text" as const, text: await makeRequest("GET", path, undefined, query_params) }],
   }),
 );
 
-server.tool(
+server.registerTool(
   "api_post",
-  "Make a POST request to the custom API",
   {
-    path: z.string().describe("API path"),
-    body: z.record(z.string(), z.unknown()).describe("Request body as JSON object"),
+    description: "Make a POST request to the custom API",
+    inputSchema: {
+      path: z.string().describe("API path"),
+      body: z.string().describe("Request body as a JSON string. MUST BE A VALID JSON OBJECT!"),
+    },
   },
-  async ({ path, body }) => ({
-    content: [{ type: "text" as const, text: await makeRequest("POST", path, body) }],
-  }),
+  async ({ path, body }) => {
+    const jsonBody = toJsonObject(body);
+    return {
+      content: [{ type: "text" as const, text: await makeRequest("POST", path, jsonBody) }],
+    };
+  },
 );
 
-server.tool(
+server.registerTool(
   "api_put",
-  "Make a PUT request to the custom API",
   {
-    path: z.string().describe("API path"),
-    body: z.record(z.string(), z.unknown()).describe("Request body as JSON object"),
+    description: "Make a PUT request to the custom API",
+    inputSchema: {
+      path: z.string().describe("API path"),
+      body: z.string().describe("Request body as a JSON string. MUST BE A VALID JSON OBJECT!"),
+    },
   },
-  async ({ path, body }) => ({
-    content: [{ type: "text" as const, text: await makeRequest("PUT", path, body) }],
-  }),
+  async ({ path, body }) => {
+    const jsonBody = toJsonObject(body);
+    return {
+      content: [{ type: "text" as const, text: await makeRequest("PUT", path, jsonBody) }],
+    };
+  },
 );
 
-server.tool(
+server.registerTool(
   "api_patch",
-  "Make a PATCH request to the custom API",
   {
-    path: z.string().describe("API path"),
-    body: z.record(z.string(), z.unknown()).describe("Request body as JSON object"),
+    description: "Make a PATCH request to the custom API",
+    inputSchema: {
+      path: z.string().describe("API path"),
+      body: z.string().describe("Request body as a JSON string. MUST BE A VALID JSON OBJECT!"),
+    },
   },
-  async ({ path, body }) => ({
-    content: [{ type: "text" as const, text: await makeRequest("PATCH", path, body) }],
-  }),
+  async ({ path, body }) => {
+    const jsonBody = toJsonObject(body);
+    return {
+      content: [{ type: "text" as const, text: await makeRequest("PATCH", path, jsonBody) }],
+    };
+  }
 );
 
-server.tool(
-  "api_delete",
-  "Make a DELETE request to the custom API",
-  {
-    path: z.string().describe("API path"),
-  },
-  async ({ path }) => ({
-    content: [{ type: "text" as const, text: await makeRequest("DELETE", path) }],
-  }),
-);
+// server.registerTool(
+//   "api_delete",
+//   {
+//     description: "Make a DELETE request to the custom API",
+//     inputSchema: {
+//       path: z.string().describe("API path"),
+//     },
+//   },
+//   async ({ path }) => ({
+//     content: [{ type: "text" as const, text: await makeRequest("DELETE", path) }],
+//   }),
+// );
 
 async function main() {
+  debugLog(`[custom-api] MCP server starting — base URL: ${BASE_URL}`);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[custom-api] MCP server running — base URL: ${BASE_URL}`);
+  debugLog(`[custom-api] MCP server running — base URL: ${BASE_URL}`);
 }
 
 main().catch((err) => {
-  console.error("[custom-api] Fatal error:", err);
+  debugLog("[custom-api] Fatal error:", err);
   process.exit(1);
 });

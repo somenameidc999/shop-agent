@@ -32,3 +32,15 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model McpServerConfig {
+  id         String   @id @default(cuid())
+  shop       String
+  serverType String
+  enabled    Boolean  @default(false)
+  configJson String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([shop, serverType])
+}

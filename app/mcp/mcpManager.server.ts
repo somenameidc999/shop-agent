@@ -3,7 +3,7 @@
  *
  * Manages connections to multiple MCP servers, aggregates their tools,
  * and routes tool calls to the correct server. Singleton lifecycle —
- * initialized once, reused across requests.
+ * initialized once per shop, reused across requests.
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -11,7 +11,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 import { tool as aiTool, type Tool } from "ai";
 
-import { type McpServerConfig, getServerConfigs } from "./config.server";
+import {
+  type McpServerConfig,
+  getServerConfigs,
+  cleanupGoogleCredsFile,
+} from "./config.server";
 
 interface ConnectedServer {
   readonly name: string;
@@ -28,31 +32,51 @@ class McpManager {
   private servers: Map<string, ConnectedServer> = new Map();
   private initialized = false;
   private initializing: Promise<void> | null = null;
+  private currentShop: string | null = null;
+  private lastConfigs: readonly McpServerConfig[] = [];
 
-  async ensureInitialized(): Promise<void> {
+  async ensureInitialized(shop?: string): Promise<void> {
+    if (shop && shop !== this.currentShop && this.initialized) {
+      await this.shutdown();
+    }
+
+    if (shop) {
+      this.currentShop = shop;
+    }
+
     if (this.initialized) return;
     if (this.initializing) return this.initializing;
 
-    this.initializing = this.initialize();
+    if (!this.currentShop) {
+      console.info("[McpManager] No shop set — skipping initialization");
+      return;
+    }
+
+    this.initializing = this.initialize().finally(() => {
+      this.initializing = null;
+    });
     await this.initializing;
-    this.initializing = null;
   }
 
   private async initialize(): Promise<void> {
-    const configs = getServerConfigs().filter((c) => c.enabled);
+    if (!this.currentShop) return;
+
+    const configs = await getServerConfigs(this.currentShop);
+    this.lastConfigs = configs;
+    const enabled = configs.filter((c) => c.enabled);
 
     console.info(
-      `[McpManager] Initializing ${configs.length} MCP server(s): ${configs.map((c) => c.name).join(", ")}`,
+      `[McpManager] Initializing ${enabled.length} MCP server(s) for shop "${this.currentShop}": ${enabled.map((c) => c.name).join(", ") || "(none)"}`,
     );
 
     const results = await Promise.allSettled(
-      configs.map((config) => this.connectServer(config)),
+      enabled.map((config) => this.connectServer(config)),
     );
 
     for (const [i, result] of results.entries()) {
       if (result.status === "rejected") {
         console.error(
-          `[McpManager] Failed to connect to "${configs[i]!.name}":`,
+          `[McpManager] Failed to connect to "${enabled[i]!.name}":`,
           result.reason,
         );
       }
@@ -89,7 +113,12 @@ class McpManager {
       inputSchema: (t.inputSchema as Record<string, unknown>) ?? {},
     }));
 
-    this.servers.set(config.name, { name: config.name, client, transport, tools });
+    this.servers.set(config.name, {
+      name: config.name,
+      client,
+      transport,
+      tools,
+    });
 
     console.info(
       `[McpManager] Connected to "${config.name}" — ${tools.length} tool(s): ${tools.map((t) => t.name).join(", ")}`,
@@ -140,6 +169,41 @@ class McpManager {
     return { servers };
   }
 
+  /** Returns every configured server with its enabled/connected state. */
+  getFullStatus(): {
+    servers: Array<{
+      name: string;
+      description: string;
+      enabled: boolean;
+      connected: boolean;
+      toolCount: number;
+      tools: string[];
+    }>;
+  } {
+    const servers = this.lastConfigs.map((config) => {
+      const connected = this.servers.get(config.name);
+      return {
+        name: config.name,
+        description: config.description,
+        enabled: config.enabled,
+        connected: !!connected,
+        toolCount: connected?.tools.length ?? 0,
+        tools: connected?.tools.map((t) => t.name) ?? [],
+      };
+    });
+    return { servers };
+  }
+
+  /** Tears down all connections and reinitializes with fresh DB config. */
+  async reinitialize(shop: string): Promise<void> {
+    if (this.currentShop) {
+      cleanupGoogleCredsFile(this.currentShop);
+    }
+    await this.shutdown();
+    this.currentShop = shop;
+    await this.ensureInitialized(shop);
+  }
+
   async shutdown(): Promise<void> {
     for (const [name, server] of this.servers) {
       try {
@@ -150,6 +214,7 @@ class McpManager {
       }
     }
     this.servers.clear();
+    this.lastConfigs = [];
     this.initialized = false;
   }
 }
@@ -208,7 +273,6 @@ function jsonSchemaToZod(schema: Record<string, unknown>): z.ZodType<any, any> {
     return z.boolean();
   }
 
-  // Fallback: accept anything
   return z.any();
 }
 

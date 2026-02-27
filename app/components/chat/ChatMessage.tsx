@@ -1,9 +1,6 @@
-/**
- * ChatMessage — renders a single chat message bubble.
- * Handles user messages, assistant messages, and tool call indicators.
- */
-
 import type { UIMessage, UIMessagePart, UIDataTypes, UITools } from "ai";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface ChatMessageProps {
   readonly message: UIMessage;
@@ -13,47 +10,55 @@ export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user";
 
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: isUser ? "flex-end" : "flex-start",
-        marginBottom: "12px",
-      }}
+    <s-stack
+      direction="inline"
+      gap="small"
+      padding="none none base none"
+      justifyContent={isUser ? "end" : "start"}
     >
-      <div
-        style={{
-          maxWidth: "80%",
-          padding: "12px 16px",
-          borderRadius: isUser ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-          backgroundColor: isUser ? "var(--p-color-bg-fill-brand)" : "var(--p-color-bg-surface-secondary)",
-          color: isUser ? "var(--p-color-text-on-fill)" : "var(--p-color-text)",
-          fontSize: "14px",
-          lineHeight: "1.5",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-        }}
+      {!isUser && (
+        <s-avatar initials="S" alt="Sidekick" size="small" />
+      )}
+      <div className="chat-message-bubble">
+      <s-box
+        padding="base"
+        borderRadius="base"
+        background={isUser ? "strong" : "subdued"}
+        maxInlineSize="80%"
       >
-        <div style={{ fontSize: "11px", fontWeight: 600, marginBottom: "4px", opacity: 0.7 }}>
-          {isUser ? "You" : "Sidekick"}
-        </div>
+        <s-stack gap="small-200">
+          <s-text type="strong" color="subdued">
+            {isUser ? "You" : "Sidekick"}
+          </s-text>
 
-        {message.parts.map((part: UIMessagePart<UIDataTypes, UITools>, index: number) => {
-          if (part.type === "text") {
-            return <span key={index}>{part.text}</span>;
-          }
-          if (part.type === "dynamic-tool") {
-            return (
-              <ToolCallIndicator
-                key={index}
-                toolName={part.toolName}
-                state={part.state}
-              />
-            );
-          }
-          return null;
-        })}
+          {message.parts.map((part: UIMessagePart<UIDataTypes, UITools>, index: number) => {
+            if (part.type === "text") {
+              return (
+                <div key={index} className="markdown-content">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {part.text}
+                  </ReactMarkdown>
+                </div>
+              );
+            }
+            if (part.type === "dynamic-tool") {
+              return (
+                <ToolCallIndicator
+                  key={index}
+                  toolName={part.toolName}
+                  state={part.state}
+                />
+              );
+            }
+            return null;
+          })}
+        </s-stack>
+      </s-box>
       </div>
-    </div>
+      {isUser && (
+        <s-avatar initials="Y" alt="You" size="small" />
+      )}
+    </s-stack>
   );
 }
 
@@ -70,27 +75,12 @@ function ToolCallIndicator({ toolName, state }: ToolCallIndicatorProps) {
   const isRunning = state === "call" || state === "partial-call";
   const isDone = state === "result";
 
+  const tone = isDone ? "success" : isRunning ? "info" : "neutral";
+  const icon = isDone ? "check-circle" : isRunning ? "in-progress" : "wrench";
+
   return (
-    <div
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "6px",
-        padding: "4px 10px",
-        margin: "4px 0",
-        borderRadius: "8px",
-        backgroundColor: "var(--p-color-bg-surface-tertiary)",
-        color: "var(--p-color-text-secondary)",
-        fontSize: "12px",
-        fontFamily: "monospace",
-      }}
-    >
-      <span style={{ fontSize: "14px" }}>
-        {isRunning ? "⏳" : isDone ? "✅" : "🔧"}
-      </span>
-      <span>
-        <strong>{serverName}</strong>.{tool}
-      </span>
-    </div>
+    <s-badge tone={tone} icon={icon}>
+      {serverName}.{tool}
+    </s-badge>
   );
 }
