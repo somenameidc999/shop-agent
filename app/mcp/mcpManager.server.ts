@@ -14,7 +14,7 @@ import { tool as aiTool, type Tool } from "ai";
 import {
   type McpServerConfig,
   getServerConfigs,
-  cleanupGoogleCredsFile,
+  cleanupGoogleCredsFiles,
 } from "./config.server";
 
 interface ConnectedServer {
@@ -90,7 +90,7 @@ class McpManager {
 
   private async connectServer(config: McpServerConfig): Promise<void> {
     const client = new Client({
-      name: `sidekick-${config.name}`,
+      name: `agent-${config.name}`,
       version: "1.0.0",
     });
 
@@ -179,6 +179,8 @@ class McpManager {
   getFullStatus(): {
     servers: Array<{
       name: string;
+      serverType: string;
+      instanceName: string;
       description: string;
       enabled: boolean;
       connected: boolean;
@@ -190,6 +192,8 @@ class McpManager {
       const connected = this.servers.get(config.name);
       return {
         name: config.name,
+        serverType: config.serverType,
+        instanceName: config.instanceName,
         description: config.description,
         enabled: config.enabled,
         connected: !!connected,
@@ -203,7 +207,7 @@ class McpManager {
   /** Tears down all connections and reinitializes with fresh DB config. */
   async reinitialize(shop: string): Promise<void> {
     if (this.currentShop) {
-      cleanupGoogleCredsFile(this.currentShop);
+      cleanupGoogleCredsFiles(this.currentShop);
     }
     await this.shutdown();
     this.currentShop = shop;

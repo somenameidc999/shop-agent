@@ -12,8 +12,9 @@ import type { ActionFunctionArgs } from "react-router";
 import { streamText, stepCountIs, convertToModelMessages } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { mcpManager } from "../mcp/mcpManager.server";
+import { AGENT_NAME } from "../config/agent";
 
-const SYSTEM_PROMPT = `You are Sidekick, an AI assistant for Shopify merchants.
+const SYSTEM_PROMPT = `You are ${process.env.AGENT_NAME || AGENT_NAME}, an AI assistant for Shopify merchants.
 
 You have access to tools from multiple connected data sources including databases,
 spreadsheets, file storage, APIs, and more. Each tool is prefixed with its source
@@ -37,7 +38,8 @@ You can help with tasks like:
 - Managing files across storage services (S3, Dropbox, FTP)
 - Making API calls to external services
 - Reading, searching, sending, and managing email
-- Cross-referencing data from multiple sources`;
+- Cross-referencing data from multiple sources
+- Executing recommended next steps for store optimization and data management`;
 
 export async function action({ request }: ActionFunctionArgs) {
   const { messages } = await request.json();
@@ -50,7 +52,7 @@ export async function action({ request }: ActionFunctionArgs) {
   const hasTools = Object.keys(tools).length > 0;
 
   const result = streamText({
-    model: openai("gpt-4o"),
+    model: openai("gpt-4o-mini"),
     system: SYSTEM_PROMPT,
     messages: modelMessages,
     // Only pass tools when there are actually tools available.

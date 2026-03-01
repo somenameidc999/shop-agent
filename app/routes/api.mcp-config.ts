@@ -3,6 +3,7 @@
  *
  * CRUD operations for MCP server credentials.
  * All credentials are encrypted at rest in the database.
+ * Supports multiple instances per server type via instanceName.
  */
 
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
@@ -21,9 +22,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const { session } = await authenticate.admin(request);
   const url = new URL(request.url);
   const serverType = url.searchParams.get("serverType");
+  const instanceName = url.searchParams.get("instanceName") ?? "default";
 
   if (serverType) {
-    const config = await getConfigForShop(session.shop, serverType);
+    const config = await getConfigForShop(session.shop, serverType, instanceName);
     const def = SERVER_FIELD_DEFS[serverType as ServerType];
     if (!def) {
       return Response.json({ error: "Unknown server type" }, { status: 400 });
@@ -37,7 +39,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
       }
     }
 
-    return Response.json({ serverType, fields: redacted, hasConfig: !!config });
+    return Response.json({
+      serverType,
+      instanceName,
+      fields: redacted,
+      hasConfig: !!config,
+    });
   }
 
   const configs = await getAllConfigsForShop(session.shop);
@@ -50,6 +57,7 @@ export async function action({ request }: ActionFunctionArgs) {
   if (request.method === "DELETE") {
     const url = new URL(request.url);
     const serverType = url.searchParams.get("serverType");
+    const instanceName = url.searchParams.get("instanceName") ?? "default";
     if (!serverType) {
       return Response.json(
         { error: "serverType is required" },
@@ -57,7 +65,7 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    await deleteConfigForShop(session.shop, serverType);
+    await deleteConfigForShop(session.shop, serverType, instanceName);
     await mcpManager.reinitialize(session.shop);
 
     return Response.json({ success: true });
@@ -66,11 +74,12 @@ export async function action({ request }: ActionFunctionArgs) {
   if (request.method === "POST") {
     const body = (await request.json()) as {
       serverType?: string;
+      instanceName?: string;
       fields?: Record<string, string>;
       enabled?: boolean;
     };
 
-    const { serverType, fields, enabled } = body;
+    const { serverType, instanceName = "default", fields, enabled } = body;
 
     if (!serverType || !fields) {
       return Response.json(
@@ -95,7 +104,7 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    const existing = await getConfigForShop(session.shop, serverType);
+    const existing = await getConfigForShop(session.shop, serverType, instanceName);
     const mergedFields: Record<string, string> = {};
     for (const field of def.fields) {
       const incoming = fields[field.key];
@@ -111,6 +120,7 @@ export async function action({ request }: ActionFunctionArgs) {
     await saveConfigForShop(
       session.shop,
       serverType,
+      instanceName,
       mergedFields,
       enabled ?? true,
     );

@@ -1,6 +1,7 @@
 import type { UIMessage, UIMessagePart, UIDataTypes, UITools } from "ai";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { AGENT_NAME, AGENT_INITIAL } from "../../config/agent";
 
 interface ChatMessageProps {
   readonly message: UIMessage;
@@ -17,7 +18,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
       justifyContent={isUser ? "end" : "start"}
     >
       {!isUser && (
-        <s-avatar initials="S" alt="Sidekick" size="small" />
+        <s-avatar initials={AGENT_INITIAL} alt={AGENT_NAME} size="small" />
       )}
       <div className="chat-message-bubble">
       <s-box
@@ -28,7 +29,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
       >
         <s-stack gap="small-200">
           <s-text type="strong" color="subdued">
-            {isUser ? "You" : "Sidekick"}
+            {isUser ? "You" : AGENT_NAME}
           </s-text>
 
           {message.parts.map((part: UIMessagePart<UIDataTypes, UITools>, index: number) => {

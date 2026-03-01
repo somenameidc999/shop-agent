@@ -43,13 +43,76 @@ model Shop {
 }
 
 model McpServerConfig {
-  id         String   @id @default(cuid())
-  shop       String
-  serverType String
-  enabled    Boolean  @default(false)
-  configJson String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id           String   @id @default(cuid())
+  shop         String
+  serverType   String
+  instanceName String   @default("default")
+  enabled      Boolean  @default(false)
+  configJson   String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  @@unique([shop, serverType])
+  @@unique([shop, serverType, instanceName])
+}
+
+model Goal {
+  id               String          @id @default(cuid())
+  shop             String
+  ruleKey          String
+  title            String
+  description      String
+  category         String
+  priority         String          @default("medium")
+  requiredServers  String
+  analysisPrompt   String
+  actionPrompt     String
+  enabled          Boolean         @default(true)
+  cronIntervalMins Int             @default(240)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  executions       GoalExecution[]
+
+  @@unique([shop, ruleKey])
+}
+
+model GoalExecution {
+  id             String    @id @default(cuid())
+  shop           String
+  goalId         String
+  title          String
+  description    String
+  category       String
+  priority       String
+  status         String    @default("new")
+  actionPrompt   String
+  mcpServersUsed String
+  metadata       String?
+  resultSummary  String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  expiresAt      DateTime?
+  executedAt     DateTime?
+  goal           Goal      @relation(fields: [goalId], references: [id])
+
+  @@index([shop, status])
+  @@index([shop, goalId])
+}
+
+model BackgroundJob {
+  id          String    @id @default(cuid())
+  shop        String
+  jobType     String
+  status      String    @default("pending")
+  payload     String
+  result      String?
+  error       String?
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  scheduledAt DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([status, scheduledAt])
+  @@index([shop, jobType])
 }

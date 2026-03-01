@@ -3,67 +3,88 @@
  *
  * Verifies that getServerConfigs() produces the correct server entries
  * for each data source type, with proper enabled/disabled logic.
+ *
+ * The production code reads McpServerConfig rows from prisma, decrypts
+ * configJson, and builds runtime configs via buildServerConfig(). We
+ * mock prisma and decrypt to test the config-building logic in isolation.
  */
 
 import { randomBytes } from "crypto";
-import { vi, type Mock } from "vitest";
+import { vi } from "vitest";
 
 process.env.ENCRYPTION_KEY = randomBytes(32).toString("hex");
 
-vi.mock("../../app/services/mcpConfig.server", () => ({
-  getConfigForShop: vi.fn(),
+vi.mock("../../app/db.server", () => ({
+  default: {
+    mcpServerConfig: { findMany: vi.fn() },
+    shop: { findUnique: vi.fn() },
+  },
 }));
 
-import { getConfigForShop } from "../../app/services/mcpConfig.server";
+vi.mock("../../app/utils/encryption.server", () => ({
+  decrypt: vi.fn((val: string) => val),
+  encrypt: vi.fn((val: string) => val),
+}));
+
+import prisma from "../../app/db.server";
 import { getServerConfigs, type McpServerConfig } from "../../app/mcp/config.server";
 
-const mockGetConfig = getConfigForShop as Mock;
+const mockPrisma = prisma as unknown as {
+  mcpServerConfig: { findMany: ReturnType<typeof vi.fn> };
+  shop: { findUnique: ReturnType<typeof vi.fn> };
+};
 
-function mockConfig(fields: Record<string, string>, enabled = true) {
-  return { fields, enabled };
+function dbRow(
+  serverType: string,
+  fields: Record<string, string>,
+  enabled = true,
+  instanceName = "default",
+) {
+  return {
+    id: `cfg-${serverType}-${instanceName}`,
+    shop: "test.myshopify.com",
+    serverType,
+    instanceName,
+    configJson: JSON.stringify(fields),
+    enabled,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
 }
 
-function findServer(configs: readonly McpServerConfig[], name: string) {
-  return configs.find((c) => c.name === name);
+function findByType(configs: readonly McpServerConfig[], serverType: string) {
+  return configs.find((c) => c.serverType === serverType);
 }
 
 describe("getServerConfigs", () => {
   beforeEach(() => {
-    mockGetConfig.mockReset();
+    vi.clearAllMocks();
+    mockPrisma.shop.findUnique.mockResolvedValue({ accessToken: "shpat_test" });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([]);
   });
 
-  it("returns all server entries even when no configs exist", async () => {
-    mockGetConfig.mockResolvedValue(null);
+  it("returns only shopify when no configs exist in the database", async () => {
     const configs = await getServerConfigs("test.myshopify.com");
-
-    const names = configs.map((c) => c.name);
-    expect(names).toContain("postgres");
-    expect(names).toContain("mysql");
-    expect(names).toContain("google-sheets");
-    expect(names).toContain("google-drive");
-    expect(names).toContain("google-docs");
-    expect(names).toContain("airtable");
-    expect(names).toContain("email");
-    expect(names).toContain("ftp");
-    expect(names).toContain("custom-api");
+    expect(configs).toHaveLength(1);
+    expect(configs[0].name).toBe("shopify");
   });
 
-  it("disables all servers when no shop config exists", async () => {
-    mockGetConfig.mockResolvedValue(null);
+  it("disables shopify when no shop access token exists", async () => {
+    mockPrisma.shop.findUnique.mockResolvedValue(null);
     const configs = await getServerConfigs("test.myshopify.com");
-    expect(configs.every((c) => !c.enabled)).toBe(true);
+    const shopify = configs.find((c) => c.name === "shopify")!;
+    expect(shopify.enabled).toBe(false);
   });
 
   it("enables postgres when connectionString is present and enabled", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "postgres") {
-        return mockConfig({ connectionString: "postgresql://localhost/test" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("postgres", { connectionString: "postgresql://localhost/test" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const pg = findServer(configs, "postgres")!;
+    const pg = findByType(configs, "postgres")!;
+    expect(pg).toBeDefined();
+    expect(pg.name).toBe("postgres__default");
     expect(pg.enabled).toBe(true);
     expect(pg.command).toBe("npx");
     expect(pg.args).toContain("@modelcontextprotocol/server-postgres");
@@ -71,27 +92,24 @@ describe("getServerConfigs", () => {
   });
 
   it("disables postgres when enabled=false in config", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "postgres") {
-        return mockConfig({ connectionString: "postgresql://localhost/test" }, false);
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("postgres", { connectionString: "postgresql://localhost/test" }, false),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    expect(findServer(configs, "postgres")!.enabled).toBe(false);
+    const pg = findByType(configs, "postgres")!;
+    expect(pg).toBeDefined();
+    expect(pg.enabled).toBe(false);
   });
 
   it("enables mysql with parsed connection string env vars", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "mysql") {
-        return mockConfig({ connectionString: "mysql://admin:pass@db.host:3306/mydb" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("mysql", { connectionString: "mysql://admin:pass@db.host:3306/mydb" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const mysql = findServer(configs, "mysql")!;
+    const mysql = findByType(configs, "mysql")!;
+    expect(mysql).toBeDefined();
     expect(mysql.enabled).toBe(true);
     expect(mysql.env?.MYSQL_HOST).toBe("db.host");
     expect(mysql.env?.MYSQL_PORT).toBe("3306");
@@ -101,63 +119,56 @@ describe("getServerConfigs", () => {
   });
 
   it("uses defaults for malformed mysql connection string", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "mysql") {
-        return mockConfig({ connectionString: "not-a-url" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("mysql", { connectionString: "not-a-url" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const mysql = findServer(configs, "mysql")!;
+    const mysql = findByType(configs, "mysql")!;
+    expect(mysql).toBeDefined();
     expect(mysql.env?.MYSQL_HOST).toBe("localhost");
     expect(mysql.env?.MYSQL_PORT).toBe("3306");
   });
 
   it("enables airtable when apiKey is present", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "airtable") {
-        return mockConfig({ apiKey: "patXXX", baseId: "appXXX" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("airtable", { apiKey: "patXXX", baseId: "appXXX" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const at = findServer(configs, "airtable")!;
+    const at = findByType(configs, "airtable")!;
+    expect(at).toBeDefined();
     expect(at.enabled).toBe(true);
     expect(at.env?.AIRTABLE_API_KEY).toBe("patXXX");
     expect(at.env?.AIRTABLE_BASE_ID).toBe("appXXX");
   });
 
   it("disables airtable when apiKey is missing", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "airtable") {
-        return mockConfig({ baseId: "appXXX" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("airtable", { baseId: "appXXX" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    expect(findServer(configs, "airtable")!.enabled).toBe(false);
+    const at = findByType(configs, "airtable")!;
+    expect(at).toBeDefined();
+    expect(at.enabled).toBe(false);
   });
 
   it("enables email when all required fields are present", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "email") {
-        return mockConfig({
-          emailAddress: "test@gmail.com",
-          password: "app-pass",
-          imapHost: "imap.gmail.com",
-          smtpHost: "smtp.gmail.com",
-          imapPort: "993",
-          smtpPort: "465",
-        });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("email", {
+        emailAddress: "test@gmail.com",
+        password: "app-pass",
+        imapHost: "imap.gmail.com",
+        smtpHost: "smtp.gmail.com",
+        imapPort: "993",
+        smtpPort: "465",
+      }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const email = findServer(configs, "email")!;
+    const email = findByType(configs, "email")!;
+    expect(email).toBeDefined();
     expect(email.enabled).toBe(true);
     expect(email.env?.MCP_EMAIL_ADDRESS).toBe("test@gmail.com");
     expect(email.env?.MCP_EMAIL_IMAP_HOST).toBe("imap.gmail.com");
@@ -166,65 +177,57 @@ describe("getServerConfigs", () => {
   });
 
   it("uses STARTTLS mode when smtp port is 587", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "email") {
-        return mockConfig({
-          emailAddress: "test@outlook.com",
-          password: "pass",
-          imapHost: "outlook.office365.com",
-          smtpHost: "smtp.office365.com",
-          smtpPort: "587",
-        });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("email", {
+        emailAddress: "test@outlook.com",
+        password: "pass",
+        imapHost: "outlook.office365.com",
+        smtpHost: "smtp.office365.com",
+        smtpPort: "587",
+      }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const email = findServer(configs, "email")!;
+    const email = findByType(configs, "email")!;
+    expect(email).toBeDefined();
     expect(email.env?.MCP_EMAIL_SMTP_TLS).toBe("false");
     expect(email.env?.MCP_EMAIL_SMTP_STARTTLS).toBe("true");
   });
 
   it("enables ftp when host is present", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "ftp") {
-        return mockConfig({ host: "ftp.example.com", port: "22", username: "user", password: "pass" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("ftp", { host: "ftp.example.com", port: "22", username: "user", password: "pass" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const ftp = findServer(configs, "ftp")!;
+    const ftp = findByType(configs, "ftp")!;
+    expect(ftp).toBeDefined();
     expect(ftp.enabled).toBe(true);
     expect(ftp.env?.FTP_HOST).toBe("ftp.example.com");
     expect(ftp.env?.FTP_USER).toBe("user");
   });
 
   it("enables custom-api when baseUrl is present", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "custom-api") {
-        return mockConfig({ baseUrl: "https://api.example.com", apiKey: "sk-123" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("custom-api", { baseUrl: "https://api.example.com", apiKey: "sk-123" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const api = findServer(configs, "custom-api")!;
+    const api = findByType(configs, "custom-api")!;
+    expect(api).toBeDefined();
     expect(api.enabled).toBe(true);
     expect(api.env?.CUSTOM_API_BASE_URL).toBe("https://api.example.com");
     expect(api.env?.CUSTOM_API_KEY).toBe("sk-123");
   });
 
   it("enables custom-api without an API key (optional field)", async () => {
-    mockGetConfig.mockImplementation((_shop: string, type: string) => {
-      if (type === "custom-api") {
-        return mockConfig({ baseUrl: "https://api.example.com" });
-      }
-      return null;
-    });
+    mockPrisma.mcpServerConfig.findMany.mockResolvedValue([
+      dbRow("custom-api", { baseUrl: "https://api.example.com" }),
+    ]);
 
     const configs = await getServerConfigs("test.myshopify.com");
-    const api = findServer(configs, "custom-api")!;
+    const api = findByType(configs, "custom-api")!;
+    expect(api).toBeDefined();
     expect(api.enabled).toBe(true);
     expect(api.env?.CUSTOM_API_KEY).toBe("");
   });

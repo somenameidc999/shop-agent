@@ -1,4 +1,4 @@
-import { ServerConfigForm, type FieldDef } from "./ServerConfigForm";
+import { ServerConfigForm, type FieldDef, type FormProps } from "./ServerConfigForm";
 
 const FIELDS: FieldDef[] = [
   {
@@ -35,20 +35,7 @@ const FIELDS: FieldDef[] = [
   },
 ];
 
-interface Props {
-  savedValues: Record<string, string>;
-  hasConfig: boolean;
-  enabled: boolean;
-  onSave: (
-    serverType: string,
-    values: Record<string, string>,
-    enabled: boolean,
-  ) => void;
-  onDelete: (serverType: string) => void;
-  saving: boolean;
-}
-
-export function S3Form(props: Props) {
+export function S3Form(props: FormProps) {
   return (
     <ServerConfigForm
       serverType="s3"

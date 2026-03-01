@@ -65,7 +65,6 @@ const SHADOWED_GLOBALS = [
   "Function",
   "Proxy",
   "Reflect",
-  "import",
   "module",
   "exports",
   "__dirname",
@@ -106,7 +105,7 @@ export async function runInSandbox(
   const paramNames = Object.keys(scope);
   const paramValues = Object.values(scope);
 
-  const wrappedCode = `"use strict"; return (async () => { ${code} })();`;
+  const wrappedCode = `return (async () => { ${code} })();`;
 
   let fn: (...args: unknown[]) => Promise<unknown>;
   try {

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 export interface McpServerInfo {
   readonly name: string;
+  readonly serverType: string;
+  readonly instanceName: string;
   readonly description: string;
   readonly enabled: boolean;
   readonly connected: boolean;
@@ -21,13 +23,14 @@ const ICON_MAP: Record<string, string> = {
   "google-sheets": "file",
   "google-drive": "folder",
   "google-docs": "page-reference",
+  google: "file",
   airtable: "table",
   s3: "upload",
   dropbox: "folder",
   ftp: "download",
   "custom-api": "code",
-  "email": "email",
-  shopify: "store",
+  email: "email",
+  shopify: "cart",
 };
 
 function formatName(name: string): string {
@@ -37,11 +40,31 @@ function formatName(name: string): string {
     .join(" ");
 }
 
+interface ServerGroup {
+  serverType: string;
+  instances: McpServerInfo[];
+}
+
+function groupByType(servers: readonly McpServerInfo[]): ServerGroup[] {
+  const map = new Map<string, McpServerInfo[]>();
+  for (const s of servers) {
+    const type = s.serverType || s.name;
+    if (!map.has(type)) map.set(type, []);
+    map.get(type)!.push(s);
+  }
+  return Array.from(map.entries()).map(([serverType, instances]) => ({
+    serverType,
+    instances,
+  }));
+}
+
 export function McpSidebar({ servers, isLoading }: McpSidebarProps) {
   const connectedCount = servers.filter((s) => s.connected).length;
   const totalTools = servers
     .filter((s) => s.connected)
     .reduce((sum, s) => sum + s.toolCount, 0);
+
+  const groups = groupByType(servers);
 
   return (
     <div style={{ width: 260, minWidth: 260, borderRight: "1px solid var(--s-color-border-secondary, #e3e3e3)", display: "flex", flexDirection: "column", height: "100%" }}>
@@ -66,9 +89,9 @@ export function McpSidebar({ servers, isLoading }: McpSidebarProps) {
           </s-box>
         ) : (
           <s-box padding="small-200">
-            <s-stack gap="small-100">
-              {servers.map((server) => (
-                <ServerRow key={server.name} server={server} />
+            <s-stack gap="small-200">
+              {groups.map((group) => (
+                <TypeGroup key={group.serverType} group={group} />
               ))}
             </s-stack>
           </s-box>
@@ -78,8 +101,37 @@ export function McpSidebar({ servers, isLoading }: McpSidebarProps) {
   );
 }
 
-function ServerRow({ server }: { readonly server: McpServerInfo }) {
-  const icon = ICON_MAP[server.name] ?? "apps";
+function TypeGroup({ group }: { readonly group: ServerGroup }) {
+  const icon = ICON_MAP[group.serverType] ?? "apps";
+  const hasMultiple = group.instances.length > 1;
+
+  if (!hasMultiple) {
+    return <ServerRow server={group.instances[0]!} showInstanceName={false} />;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px" }}>
+        <s-icon type={icon as "apps"} />
+        <s-text type="strong">{formatName(group.serverType)}</s-text>
+      </div>
+      <div style={{ paddingLeft: 12 }}>
+        {group.instances.map((server) => (
+          <ServerRow key={server.name} server={server} showInstanceName />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ServerRow({
+  server,
+  showInstanceName,
+}: {
+  readonly server: McpServerInfo;
+  readonly showInstanceName: boolean;
+}) {
+  const icon = ICON_MAP[server.serverType || server.name] ?? "apps";
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -96,6 +148,12 @@ function ServerRow({ server }: { readonly server: McpServerInfo }) {
     return () => document.removeEventListener("mousedown", onClick);
   }, [open, close]);
 
+  const displayLabel = showInstanceName
+    ? server.instanceName && server.instanceName !== "default"
+      ? server.instanceName
+      : formatName(server.name)
+    : formatName(server.serverType || server.name);
+
   return (
     <s-box
       padding="small-200 base"
@@ -103,10 +161,10 @@ function ServerRow({ server }: { readonly server: McpServerInfo }) {
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <StatusDot connected={server.connected} enabled={server.enabled} />
-        <s-icon type={icon as "apps"} />
+        {!showInstanceName && <s-icon type={icon as "apps"} />}
         <div style={{ flex: 1, minWidth: 0 }}>
           <s-text type="strong" color={server.enabled ? undefined : "subdued"}>
-            {formatName(server.name)}
+            {displayLabel}
           </s-text>
           {server.connected ? (
             <div ref={containerRef} style={{ position: "relative" }}>
