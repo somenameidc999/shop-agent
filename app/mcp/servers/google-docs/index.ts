@@ -61,6 +61,58 @@ server.registerTool(
 );
 
 server.registerTool(
+  "gdocs_search",
+  {
+    description:
+      "Search Google Docs by name and full-text content. " +
+      "Returns only Google Docs (not Sheets, Slides, etc.). " +
+      "Use this to find a document when you don't know its ID.",
+    inputSchema: {
+      query: z.string().describe("Search term — matched against document names and body content"),
+      page_size: z.number().optional().default(10).describe("Maximum number of results"),
+    },
+  },
+  async ({ query, page_size }) => {
+    try {
+      const drive = google.drive({ version: "v3", auth: getAuth() });
+      const escaped = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const docFilter = "mimeType = 'application/vnd.google-apps.document' and trashed = false";
+      const limit = page_size ?? 10;
+
+      const [nameRes, ftRes] = await Promise.all([
+        drive.files.list({
+          q: `name contains '${escaped}' and ${docFilter}`,
+          pageSize: limit,
+          fields: "files(id, name, modifiedTime, createdTime)",
+          orderBy: "modifiedTime desc",
+        }),
+        drive.files.list({
+          q: `fullText contains '${escaped}' and ${docFilter}`,
+          pageSize: limit,
+          fields: "files(id, name, modifiedTime, createdTime)",
+          orderBy: "modifiedTime desc",
+        }),
+      ]);
+
+      const seen = new Set<string>();
+      const merged = [...(nameRes.data.files ?? []), ...(ftRes.data.files ?? [])].filter((f) => {
+        if (!f.id || seen.has(f.id)) return false;
+        seen.add(f.id);
+        return true;
+      });
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(merged, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text" as const, text: `Error searching docs: ${error}` }],
+      };
+    }
+  },
+);
+
+server.registerTool(
   "gdocs_get",
   {
     description: "Read the content of a Google Doc, exported as plain text",

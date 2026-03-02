@@ -5,13 +5,30 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
 import { mcpManager } from "../mcp/mcpManager.server";
+import { ensureShopInfo } from "../services/shop.server";
+import { initWorker } from "../jobs/worker.server";
+import { initScheduler } from "../jobs/scheduler.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
-  // Set shop context on MCP manager so chat API routes can use it.
-  // Fire-and-forget: don't block the layout render on MCP initialization.
+  // Persist shop info. Only calls the Shopify API when there is no saved
+  // record yet; only writes to the DB when the token has rotated.
+  void ensureShopInfo(
+    session.shop,
+    session.accessToken ?? "",
+    async () => {
+      const res = await admin.graphql(`{ shop { name } }`);
+      const { data } = await res.json();
+      return data!.shop.name;
+    },
+  ).catch((err) => console.error("Failed to persist shop info:", err));
+
   void mcpManager.ensureInitialized(session.shop).catch(console.error);
+
+  // Initialize background job worker and goal scheduler
+  initWorker();
+  initScheduler();
 
   // eslint-disable-next-line no-undef
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
@@ -23,10 +40,10 @@ export default function App() {
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app">Home</s-link>
+        <s-link href="/app">Recommendations</s-link>
+        <s-link href="/app/goals">Goals</s-link>
         <s-link href="/app/chat">Chat</s-link>
         <s-link href="/app/settings">Settings</s-link>
-        <s-link href="/app/additional">Additional page</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

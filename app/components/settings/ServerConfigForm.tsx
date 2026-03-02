@@ -11,21 +11,28 @@ export interface FieldDef {
   defaultValue?: string;
 }
 
-interface ServerConfigFormProps {
+export interface FormProps {
+  instanceName: string;
+  savedValues: Record<string, string>;
+  hasConfig: boolean;
+  enabled: boolean;
+  isNew?: boolean;
+  onSave: (
+    serverType: string,
+    instanceName: string,
+    values: Record<string, string>,
+    enabled: boolean,
+  ) => void;
+  onDelete: (serverType: string, instanceName: string) => void;
+  onCancelNew?: () => void;
+  saving: boolean;
+}
+
+interface ServerConfigFormProps extends FormProps {
   serverType: string;
   label: string;
   description: string;
   fields: FieldDef[];
-  savedValues: Record<string, string>;
-  hasConfig: boolean;
-  enabled: boolean;
-  onSave: (
-    serverType: string,
-    values: Record<string, string>,
-    enabled: boolean,
-  ) => void;
-  onDelete: (serverType: string) => void;
-  saving: boolean;
 }
 
 function buildInitialValues(
@@ -44,21 +51,26 @@ export function ServerConfigForm({
   label,
   description,
   fields,
+  instanceName: initialInstanceName,
   savedValues,
   hasConfig,
   enabled,
+  isNew,
   onSave,
   onDelete,
+  onCancelNew,
   saving,
 }: ServerConfigFormProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(!!isNew);
   const [guideOpen, setGuideOpen] = useState(false);
   const [values, setValues] = useState(() =>
     buildInitialValues(fields, savedValues),
   );
   const [isEnabled, setIsEnabled] = useState(enabled);
+  const [connName, setConnName] = useState(
+    initialInstanceName === "default" && isNew ? "" : initialInstanceName,
+  );
 
-  // Reset form state when saved values change (e.g. after action revalidation)
   const prevSavedRef = useRef(savedValues);
   useEffect(() => {
     if (prevSavedRef.current !== savedValues) {
@@ -73,14 +85,28 @@ export function ServerConfigForm({
   }, []);
 
   const handleSave = useCallback(() => {
-    onSave(serverType, values, isEnabled);
+    const finalName = connName.trim() || "default";
+    onSave(serverType, finalName, values, isEnabled);
     setExpanded(false);
-  }, [serverType, values, isEnabled, onSave]);
+  }, [serverType, connName, values, isEnabled, onSave]);
 
   const handleDelete = useCallback(() => {
-    onDelete(serverType);
+    onDelete(serverType, initialInstanceName);
     setExpanded(false);
-  }, [serverType, onDelete]);
+  }, [serverType, initialInstanceName, onDelete]);
+
+  const handleCancel = useCallback(() => {
+    if (isNew && onCancelNew) {
+      onCancelNew();
+    } else {
+      setExpanded(false);
+    }
+  }, [isNew, onCancelNew]);
+
+  const displayName =
+    initialInstanceName && initialInstanceName !== "default"
+      ? `${label} — ${initialInstanceName}`
+      : label;
 
   const statusBadge = hasConfig ? (
     <span
@@ -117,7 +143,7 @@ export function ServerConfigForm({
       style={{
         border: "1px solid var(--s-color-border-secondary, #e3e3e3)",
         borderRadius: 8,
-        marginBottom: 12,
+        marginBottom: 8,
         background: "var(--s-color-bg-surface, #fff)",
       }}
     >
@@ -138,14 +164,14 @@ export function ServerConfigForm({
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{label}</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{displayName}</div>
             <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
               {description}
             </div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {statusBadge}
+          {!isNew && statusBadge}
           <button
             type="button"
             title="How to connect"
@@ -204,10 +230,49 @@ export function ServerConfigForm({
           }}
         >
           <div style={{ marginTop: 12 }}>
+            {/* Connection Name */}
+            <div style={{ marginBottom: 12 }}>
+              <label
+                htmlFor={`${serverType}-${initialInstanceName}-connName`}
+                style={{
+                  display: "block",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  marginBottom: 4,
+                  color: "#333",
+                }}
+              >
+                Connection Name
+                <span style={{ color: "#b42318" }}> *</span>
+              </label>
+              <input
+                id={`${serverType}-${initialInstanceName}-connName`}
+                type="text"
+                value={connName}
+                onChange={(e) => setConnName(e.target.value)}
+                placeholder="e.g. Production, Staging, Client A"
+                disabled={hasConfig && !isNew}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  border: "1px solid #ccc",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  boxSizing: "border-box",
+                  background: hasConfig && !isNew ? "#f6f6f7" : undefined,
+                }}
+              />
+              {hasConfig && !isNew && (
+                <div style={{ fontSize: 11, color: "#999", marginTop: 2 }}>
+                  Name cannot be changed after creation
+                </div>
+              )}
+            </div>
+
             {fields.map((field) => (
               <div key={field.key} style={{ marginBottom: 12 }}>
                 <label
-                  htmlFor={`${serverType}-${field.key}`}
+                  htmlFor={`${serverType}-${initialInstanceName}-${field.key}`}
                   style={{
                     display: "block",
                     fontSize: 13,
@@ -223,7 +288,7 @@ export function ServerConfigForm({
                 </label>
                 {field.type === "textarea" ? (
                   <textarea
-                    id={`${serverType}-${field.key}`}
+                    id={`${serverType}-${initialInstanceName}-${field.key}`}
                     value={values[field.key] ?? ""}
                     onChange={(e) => handleChange(field.key, e.target.value)}
                     placeholder={field.placeholder}
@@ -241,7 +306,7 @@ export function ServerConfigForm({
                   />
                 ) : (
                   <input
-                    id={`${serverType}-${field.key}`}
+                    id={`${serverType}-${initialInstanceName}-${field.key}`}
                     type={field.type === "password" ? "password" : "text"}
                     value={values[field.key] ?? ""}
                     onChange={(e) => handleChange(field.key, e.target.value)}
@@ -271,12 +336,12 @@ export function ServerConfigForm({
             >
               <input
                 type="checkbox"
-                id={`${serverType}-enabled`}
+                id={`${serverType}-${initialInstanceName}-enabled`}
                 checked={isEnabled}
                 onChange={(e) => setIsEnabled(e.target.checked)}
               />
               <label
-                htmlFor={`${serverType}-enabled`}
+                htmlFor={`${serverType}-${initialInstanceName}-enabled`}
                 style={{ fontSize: 13, cursor: "pointer" }}
               >
                 Enable this server
@@ -286,7 +351,7 @@ export function ServerConfigForm({
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={handleSave}
-                disabled={saving}
+                disabled={saving || !connName.trim()}
                 style={{
                   padding: "8px 16px",
                   background: "#008060",
@@ -295,13 +360,13 @@ export function ServerConfigForm({
                   borderRadius: 6,
                   fontSize: 13,
                   fontWeight: 600,
-                  cursor: saving ? "not-allowed" : "pointer",
-                  opacity: saving ? 0.6 : 1,
+                  cursor: saving || !connName.trim() ? "not-allowed" : "pointer",
+                  opacity: saving || !connName.trim() ? 0.6 : 1,
                 }}
               >
                 {saving ? "Saving..." : "Save & Connect"}
               </button>
-              {hasConfig && (
+              {hasConfig && !isNew && (
                 <button
                   onClick={handleDelete}
                   disabled={saving}
@@ -321,7 +386,7 @@ export function ServerConfigForm({
                 </button>
               )}
               <button
-                onClick={() => setExpanded(false)}
+                onClick={handleCancel}
                 style={{
                   padding: "8px 16px",
                   background: "#f6f6f7",

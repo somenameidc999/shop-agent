@@ -39,7 +39,7 @@ const GUIDES: Record<string, Guide> = {
           "The agent will connect and be able to query your database. It has read-only access by default — use a read-only database user for extra safety.",
       },
     ],
-    tip: "For production databases, create a read-only user: CREATE ROLE sidekick LOGIN PASSWORD 'xxx'; GRANT SELECT ON ALL TABLES IN SCHEMA public TO sidekick;",
+    tip: "For production databases, create a read-only user: CREATE ROLE agent LOGIN PASSWORD 'xxx'; GRANT SELECT ON ALL TABLES IN SCHEMA public TO agent;",
   },
   mysql: {
     intro:
@@ -79,7 +79,7 @@ const GUIDES: Record<string, Guide> = {
       {
         title: "Create a service account",
         detail:
-          'Go to APIs & Services → Credentials → Create Credentials → Service Account. Give it a name like "sidekick-agent". No roles are needed at this step.',
+          'Go to APIs & Services → Credentials → Create Credentials → Service Account. Give it a name like "data-agent". No roles are needed at this step.',
       },
       {
         title: "Generate a JSON key",
