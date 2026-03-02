@@ -1,4 +1,4 @@
-# Sidekick Agent
+# Shop Agent
 
 An agentic AI assistant for Shopify merchants. Merchants define business goals, and the AI agent autonomously analyzes their store data across multiple connected services via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers, then delivers actionable recommendations that can be executed with a single click.
 
