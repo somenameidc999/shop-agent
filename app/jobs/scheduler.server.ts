@@ -167,5 +167,26 @@ export async function enqueueGoalExecution(
   return job;
 }
 
+export async function enqueueOutcomeMeasurement(
+  shop: string,
+  executionId: string,
+) {
+  const job = await prisma.backgroundJob.create({
+    data: {
+      shop,
+      jobType: "goal_measure_outcome",
+      status: "pending",
+      payload: JSON.stringify({ shop, executionId }),
+      maxAttempts: 3,
+    },
+  });
+
+  console.info(
+    `[Scheduler] Enqueued goal_measure_outcome job ${job.id} for execution ${executionId}`,
+  );
+
+  return job;
+}
+
 process.on("SIGINT", shutdownScheduler);
 process.on("SIGTERM", shutdownScheduler);

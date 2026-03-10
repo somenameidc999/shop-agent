@@ -66,58 +66,65 @@ export async function action({ request }: ActionFunctionArgs) {
     enabled?: boolean;
   };
 
-  if (body._action === "delete") {
-    if (!body.serverType || !body.instanceName) {
-      return { error: "serverType and instanceName are required" };
+  try {
+    if (body._action === "delete") {
+      if (!body.serverType || !body.instanceName) {
+        return { error: "serverType and instanceName are required" };
+      }
+      await deleteConfigForShop(session.shop, body.serverType, body.instanceName);
+      await mcpManager.reinitialize(session.shop);
+      return { success: true, message: "Configuration removed" };
     }
-    await deleteConfigForShop(session.shop, body.serverType, body.instanceName);
+
+    const { serverType, instanceName, fields, enabled } = body;
+    if (!serverType || !instanceName || !fields) {
+      return { error: "serverType, instanceName, and fields are required" };
+    }
+
+    const def = SERVER_FIELD_DEFS[serverType as ServerType];
+    if (!def) return { error: "Unknown server type" };
+
+    const missingRequired = def.fields
+      .filter((f) => f.required && !fields[f.key])
+      .map((f) => f.label);
+
+    if (missingRequired.length > 0) {
+      return { error: `Missing required fields: ${missingRequired.join(", ")}` };
+    }
+
+    const existing = await getConfigForShop(
+      session.shop,
+      serverType,
+      instanceName,
+    );
+    const mergedFields: Record<string, string> = {};
+    for (const field of def.fields) {
+      const incoming = fields[field.key];
+      if (incoming && incoming !== "••••••••") {
+        mergedFields[field.key] = incoming;
+      } else if (existing?.fields[field.key]) {
+        mergedFields[field.key] = existing.fields[field.key]!;
+      } else {
+        mergedFields[field.key] = incoming ?? "";
+      }
+    }
+
+    await saveConfigForShop(
+      session.shop,
+      serverType,
+      instanceName,
+      mergedFields,
+      enabled ?? true,
+    );
     await mcpManager.reinitialize(session.shop);
-    return { success: true, message: "Configuration removed" };
+
+    return { success: true, message: "Configuration saved successfully" };
+  } catch (err) {
+    console.error("[Settings] Error saving config:", err);
+    return {
+      error: err instanceof Error ? err.message : "Failed to save configuration",
+    };
   }
-
-  const { serverType, instanceName, fields, enabled } = body;
-  if (!serverType || !instanceName || !fields) {
-    return { error: "serverType, instanceName, and fields are required" };
-  }
-
-  const def = SERVER_FIELD_DEFS[serverType as ServerType];
-  if (!def) return { error: "Unknown server type" };
-
-  const missingRequired = def.fields
-    .filter((f) => f.required && !fields[f.key])
-    .map((f) => f.label);
-
-  if (missingRequired.length > 0) {
-    return { error: `Missing required fields: ${missingRequired.join(", ")}` };
-  }
-
-  const existing = await getConfigForShop(
-    session.shop,
-    serverType,
-    instanceName,
-  );
-  const mergedFields: Record<string, string> = {};
-  for (const field of def.fields) {
-    const incoming = fields[field.key];
-    if (incoming && incoming !== "••••••••") {
-      mergedFields[field.key] = incoming;
-    } else if (existing?.fields[field.key]) {
-      mergedFields[field.key] = existing.fields[field.key]!;
-    } else {
-      mergedFields[field.key] = incoming ?? "";
-    }
-  }
-
-  await saveConfigForShop(
-    session.shop,
-    serverType,
-    instanceName,
-    mergedFields,
-    enabled ?? true,
-  );
-  await mcpManager.reinitialize(session.shop);
-
-  return { success: true, message: "Configuration saved successfully" };
 }
 
 export default function ServerTypeDetailPage() {

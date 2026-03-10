@@ -1,4 +1,4 @@
-import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import { Links, Meta, Outlet, Scripts, ScrollRestoration, useRouteError } from "react-router";
 
 const markdownStyles = `
   .markdown-content { line-height: 1.6; }
@@ -47,7 +47,7 @@ const markdownStyles = `
   .chat-message-text { overflow-wrap: break-word; word-break: break-word; min-width: 0; }
 `;
 
-export default function App() {
+function Document({ children }: { readonly children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
@@ -64,10 +64,64 @@ export default function App() {
         <Links />
       </head>
       <body>
-        <Outlet />
+        {children}
         <ScrollRestoration />
         <Scripts />
       </body>
     </html>
+  );
+}
+
+export default function App() {
+  return (
+    <Document>
+      <Outlet />
+    </Document>
+  );
+}
+
+export function ErrorBoundary() {
+  const error = useRouteError();
+  const message =
+    error instanceof Error ? error.message : "An unexpected error occurred";
+
+  return (
+    <Document>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100vh",
+          padding: 32,
+          textAlign: "center",
+          fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+        }}
+      >
+        <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 8 }}>
+          Something went wrong
+        </h1>
+        <p style={{ fontSize: 14, color: "#616161", marginBottom: 16 }}>
+          {message}
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          style={{
+            padding: "8px 20px",
+            background: "#303030",
+            color: "#fff",
+            border: "none",
+            borderRadius: 8,
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          Reload page
+        </button>
+      </div>
+    </Document>
   );
 }
