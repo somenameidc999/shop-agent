@@ -18,6 +18,13 @@ const PRIORITY_OPTIONS = [
   { label: "Critical", value: "critical" },
 ];
 
+const OUTCOME_MEASURE_OPTIONS = [
+  { label: "After 3 days", value: 3 },
+  { label: "After 7 days", value: 7 },
+  { label: "After 14 days", value: 14 },
+  { label: "After 30 days", value: 30 },
+];
+
 interface InferredDetails {
   category: string;
   analysisPrompt: string;
@@ -35,6 +42,7 @@ export function CreateGoalForm({ onClose, onCreated }: CreateGoalFormProps) {
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
   const [cronIntervalMins, setCronIntervalMins] = useState(240);
+  const [outcomeMeasureDays, setOutcomeMeasureDays] = useState(7);
   const [isInferring, setIsInferring] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [inferred, setInferred] = useState<InferredDetails | null>(null);
@@ -88,6 +96,7 @@ export function CreateGoalForm({ onClose, onCreated }: CreateGoalFormProps) {
           description,
           priority,
           cronIntervalMins,
+          outcomeMeasureDays,
           category: editedCategory || inferred.category,
           analysisPrompt: editedAnalysisPrompt || inferred.analysisPrompt,
           actionPrompt: editedActionPrompt || inferred.actionPrompt,
@@ -105,7 +114,7 @@ export function CreateGoalForm({ onClose, onCreated }: CreateGoalFormProps) {
       setIsSaving(false);
     }
   }, [
-    title, description, priority, cronIntervalMins,
+    title, description, priority, cronIntervalMins, outcomeMeasureDays,
     editedCategory, editedAnalysisPrompt, editedActionPrompt,
     inferred, onCreated,
   ]);
@@ -232,8 +241,8 @@ export function CreateGoalForm({ onClose, onCreated }: CreateGoalFormProps) {
             />
           </div>
 
-          {/* Priority + Interval */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          {/* Priority + Interval + Outcome Timing */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
             <div>
               <label style={labelStyle}>Priority</label>
               <select
@@ -254,6 +263,18 @@ export function CreateGoalForm({ onClose, onCreated }: CreateGoalFormProps) {
                 style={selectStyle}
               >
                 {INTERVAL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Measure Outcome</label>
+              <select
+                value={outcomeMeasureDays}
+                onChange={(e) => setOutcomeMeasureDays(Number(e.target.value))}
+                style={selectStyle}
+              >
+                {OUTCOME_MEASURE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>

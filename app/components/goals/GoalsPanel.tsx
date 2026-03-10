@@ -3,6 +3,14 @@ import { GoalExecutionCard, type GoalExecution } from "./GoalExecutionCard";
 import { AGENT_NAME } from "../../config/agent";
 
 type CategoryFilter = "all" | GoalExecution["category"];
+type SortOption = "impactScore" | "priority" | "newest";
+
+interface GoalSummary {
+  id: string;
+  title: string;
+  ruleKey: string;
+  category: string;
+}
 
 const CATEGORIES: { value: CategoryFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -16,15 +24,46 @@ const CATEGORIES: { value: CategoryFilter; label: string }[] = [
   { value: "general", label: "General" },
 ];
 
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: "impactScore", label: "Impact Score" },
+  { value: "priority", label: "Priority" },
+  { value: "newest", label: "Newest" },
+];
+
+const CATEGORY_COLORS: Record<string, string> = {
+  catalog: "#8B5CF6",
+  reporting: "#10B981",
+  customer: "#3B82F6",
+  marketing: "#EC4899",
+  operations: "#F59E0B",
+  inventory: "#7C3AED",
+  sync: "#F97316",
+  general: "#6B7280",
+};
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 export function GoalsPanel() {
   const [executions, setExecutions] = useState<GoalExecution[]>([]);
+  const [goals, setGoals] = useState<GoalSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>("all");
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<SortOption>("impactScore");
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchExecutions = useCallback(async () => {
     try {
-      const response = await fetch("/api/goals");
+      const params = new URLSearchParams({ sortBy });
+      if (selectedGoalId) params.set("goalId", selectedGoalId);
+      const response = await fetch(`/api/goals?${params.toString()}`);
       if (response.ok) {
         const data = await response.json();
         setExecutions(data.executions || []);
@@ -33,6 +72,25 @@ export function GoalsPanel() {
       console.error("Failed to fetch goal executions:", error);
     } finally {
       setIsLoading(false);
+    }
+  }, [sortBy, selectedGoalId]);
+
+  const fetchGoals = useCallback(async () => {
+    try {
+      const response = await fetch("/api/goals?type=goals");
+      if (response.ok) {
+        const data = await response.json();
+        setGoals(
+          (data.goals || []).map((g: GoalSummary) => ({
+            id: g.id,
+            title: g.title,
+            ruleKey: g.ruleKey,
+            category: g.category,
+          })),
+        );
+      }
+    } catch (error) {
+      console.error("Failed to fetch goals:", error);
     }
   }, []);
 
@@ -102,9 +160,25 @@ export function GoalsPanel() {
     }
   }, []);
 
+  const handleMeasureOutcome = useCallback(async (id: string) => {
+    try {
+      await fetch("/api/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "measure_outcome", executionId: id }),
+      });
+      // Refresh to pick up status change
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await fetchExecutions();
+    } catch (error) {
+      console.error("Failed to measure outcome:", error);
+    }
+  }, [fetchExecutions]);
+
   useEffect(() => {
     void fetchExecutions();
-  }, [fetchExecutions]);
+    void fetchGoals();
+  }, [fetchExecutions, fetchGoals]);
 
   useEffect(() => {
     const hasInProgress = executions.some((e) => e.status === "in_progress");
@@ -133,6 +207,19 @@ export function GoalsPanel() {
 
   const pendingCount = executions.filter((e) => e.status === "pending").length;
   const completedCount = executions.filter((e) => e.status === "completed").length;
+
+  // Calculate total revenue opportunity (sum of midpoint estimates for pending recs)
+  const totalRevenueOpportunity = executions
+    .filter((e) => e.status === "pending" && e.estimatedRevenue)
+    .reduce((sum, e) => {
+      const rev = e.estimatedRevenue!;
+      return sum + (rev.min + rev.max) / 2;
+    }, 0);
+
+  // Count high-confidence recommendations
+  const highConfidenceCount = executions.filter(
+    (e) => e.status === "pending" && e.confidenceLevel === "high"
+  ).length;
 
   if (isLoading) {
     return (
@@ -236,6 +323,68 @@ export function GoalsPanel() {
         }}
       >
         <div style={{ display: "flex", gap: 24 }}>
+          {totalRevenueOpportunity > 0 && (
+            <>
+              <div>
+                <div
+                  style={{
+                    fontSize: 28,
+                    fontWeight: 700,
+                    color: "#16A34A",
+                    lineHeight: 1,
+                  }}
+                >
+                  {formatCurrency(totalRevenueOpportunity)}
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: "var(--s-color-text-secondary, #616161)",
+                    marginTop: 4,
+                  }}
+                >
+                  Revenue Opportunity
+                </div>
+              </div>
+              <div
+                style={{
+                  width: 1,
+                  background: "var(--s-color-border-secondary, #e3e3e3)",
+                }}
+              />
+            </>
+          )}
+          {highConfidenceCount > 0 && (
+            <>
+              <div>
+                <div
+                  style={{
+                    fontSize: 28,
+                    fontWeight: 700,
+                    color: "#16A34A",
+                    lineHeight: 1,
+                  }}
+                >
+                  {highConfidenceCount}
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: "var(--s-color-text-secondary, #616161)",
+                    marginTop: 4,
+                  }}
+                >
+                  High Confidence
+                </div>
+              </div>
+              <div
+                style={{
+                  width: 1,
+                  background: "var(--s-color-border-secondary, #e3e3e3)",
+                }}
+              />
+            </>
+          )}
           <div>
             <div
               style={{
@@ -284,71 +433,138 @@ export function GoalsPanel() {
               Completed
             </div>
           </div>
-          <div
-            style={{
-              width: 1,
-              background: "var(--s-color-border-secondary, #e3e3e3)",
-            }}
-          />
-          <div>
-            <div
-              style={{
-                fontSize: 28,
-                fontWeight: 700,
-                color: "var(--s-color-text, #1a1a1a)",
-                lineHeight: 1,
-              }}
-            >
-              {executions.length}
-            </div>
-            <div
-              style={{
-                fontSize: 13,
-                color: "var(--s-color-text-secondary, #616161)",
-                marginTop: 4,
-              }}
-            >
-              Total
-            </div>
-          </div>
         </div>
 
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={isLoading}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* Sort control */}
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortOption)}
+            style={{
+              padding: "8px 32px 8px 12px",
+              border: "1px solid var(--s-color-border-secondary, #e3e3e3)",
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 500,
+              color: "var(--s-color-text-secondary, #616161)",
+              background: "transparent",
+              cursor: "pointer",
+              fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+              appearance: "none",
+              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`,
+              backgroundRepeat: "no-repeat",
+              backgroundPosition: "right 10px center",
+            }}
+          >
+            {SORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={isLoading}
+            style={{
+              padding: "10px 20px",
+              background: "transparent",
+              color: "var(--s-color-text-secondary, #616161)",
+              border: "1px solid var(--s-color-border-secondary, #e3e3e3)",
+              borderRadius: 10,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: isLoading ? "not-allowed" : "pointer",
+              transition: "background 0.15s, border-color 0.15s",
+              fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+            onMouseEnter={(e) => {
+              if (!isLoading) {
+                e.currentTarget.style.background = "var(--s-color-bg-surface-hover, #f6f6f7)";
+                e.currentTarget.style.borderColor = "var(--s-color-border, #c9cccf)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!isLoading) {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.borderColor = "var(--s-color-border-secondary, #e3e3e3)";
+              }
+            }}
+          >
+            <s-icon type="refresh" />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Goal-based filter chips */}
+      {goals.length > 0 && (
+        <div
           style={{
-            padding: "10px 20px",
-            background: "transparent",
-            color: "var(--s-color-text-secondary, #616161)",
-            border: "1px solid var(--s-color-border-secondary, #e3e3e3)",
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: isLoading ? "not-allowed" : "pointer",
-            transition: "background 0.15s, border-color 0.15s",
-            fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
             display: "flex",
-            alignItems: "center",
             gap: 8,
-          }}
-          onMouseEnter={(e) => {
-            if (!isLoading) {
-              e.currentTarget.style.background = "var(--s-color-bg-surface-hover, #f6f6f7)";
-              e.currentTarget.style.borderColor = "var(--s-color-border, #c9cccf)";
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (!isLoading) {
-              e.currentTarget.style.background = "transparent";
-              e.currentTarget.style.borderColor = "var(--s-color-border-secondary, #e3e3e3)";
-            }
+            marginBottom: 16,
+            overflowX: "auto",
+            paddingBottom: 4,
           }}
         >
-          <s-icon type="refresh" />
-          Refresh
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => setSelectedGoalId(null)}
+            style={{
+              padding: "6px 14px",
+              background: selectedGoalId === null
+                ? "var(--s-color-bg-fill-emphasis, #303030)"
+                : "transparent",
+              color: selectedGoalId === null
+                ? "#fff"
+                : "var(--s-color-text-secondary, #616161)",
+              border: "1px solid var(--s-color-border-secondary, #e3e3e3)",
+              borderRadius: 16,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+              whiteSpace: "nowrap",
+            }}
+          >
+            All Goals
+          </button>
+          {goals.map((goal) => {
+            const color = CATEGORY_COLORS[goal.category] ?? "#6B7280";
+            const isSelected = selectedGoalId === goal.id;
+            return (
+              <button
+                key={goal.id}
+                type="button"
+                onClick={() => setSelectedGoalId(isSelected ? null : goal.id)}
+                style={{
+                  padding: "6px 14px",
+                  background: isSelected ? color + "20" : "transparent",
+                  color: isSelected ? color : "var(--s-color-text-secondary, #616161)",
+                  border: `1px solid ${isSelected ? color + "40" : "var(--s-color-border-secondary, #e3e3e3)"}`,
+                  borderRadius: 16,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+                  whiteSpace: "nowrap",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, display: "inline-block" }} />
+                {goal.title}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Category filter tabs */}
       <div
@@ -449,6 +665,7 @@ export function GoalsPanel() {
               execution={execution}
               onExecute={handleExecute}
               onDismiss={handleDismiss}
+              onMeasureOutcome={handleMeasureOutcome}
             />
           ))}
         </div>

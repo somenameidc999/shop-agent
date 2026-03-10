@@ -5,8 +5,9 @@
  * Each card links to the detail page for that source type.
  */
 
-import type { LoaderFunctionArgs } from "react-router";
+import type { LoaderFunctionArgs, HeadersFunction } from "react-router";
 import { useLoaderData, useNavigate } from "react-router";
+import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getAllConfigsForShop } from "../services/mcpConfig.server";
 import {
@@ -217,3 +218,7 @@ export default function SettingsOverview() {
     </s-page>
   );
 }
+
+export const headers: HeadersFunction = (headersArgs) => {
+  return boundary.headers(headersArgs);
+};

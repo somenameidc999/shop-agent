@@ -14,8 +14,16 @@ interface Goal {
   actionPrompt: string;
   enabled: boolean;
   cronIntervalMins: number;
+  outcomeMeasureDays: number;
   createdAt: string;
 }
+
+const OUTCOME_MEASURE_OPTIONS = [
+  { label: "After 3 days", value: 3 },
+  { label: "After 7 days", value: 7 },
+  { label: "After 14 days", value: 14 },
+  { label: "After 30 days", value: 30 },
+];
 
 const INTERVAL_LABELS: Record<number, string> = {
   60: "Every hour",
@@ -249,6 +257,10 @@ function GoalDetailModal({ goal, onClose, onUpdate, onDelete }: GoalDetailModalP
             <div>
               <div style={{ fontSize: 12, fontWeight: 600, color: "var(--s-color-text-secondary, #616161)", marginBottom: 4 }}>Frequency</div>
               <div style={{ fontSize: 14, color: "var(--s-color-text, #1a1a1a)" }}>{formatInterval(goal.cronIntervalMins)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--s-color-text-secondary, #616161)", marginBottom: 4 }}>Measure Outcome</div>
+              <div style={{ fontSize: 14, color: "var(--s-color-text, #1a1a1a)" }}>After {goal.outcomeMeasureDays} days</div>
             </div>
             {goal.requiredServers.length > 0 && (
               <div>

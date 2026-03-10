@@ -16,6 +16,8 @@ database.sqlite
 .env
 .env.*
 credentials/
+scripts/seed-connections.ts
+scripts/seed-goals.ts
 
 package-lock.json
 yarn.lock

@@ -1,6 +1,32 @@
 import { useState, useCallback } from "react";
 import { AGENT_NAME } from "../../config/agent";
 
+interface LinkedGoal {
+  readonly id: string;
+  readonly title: string;
+  readonly ruleKey: string;
+  readonly category: string;
+}
+
+interface RevenueEstimate {
+  readonly min: number;
+  readonly max: number;
+  readonly currency: string;
+}
+
+interface PercentageField {
+  readonly percentage: number;
+}
+
+interface OutcomeData {
+  readonly revenueDelta?: number;
+  readonly revenueDeltaPercent?: number;
+  readonly aovDelta?: number;
+  readonly aovDeltaPercent?: number;
+  readonly orderCountDelta?: number;
+  readonly summary?: string;
+}
+
 export interface GoalExecution {
   readonly id: string;
   readonly title: string;
@@ -11,12 +37,23 @@ export interface GoalExecution {
   readonly mcpServersUsed: readonly string[];
   readonly actionPrompt?: string;
   readonly createdAt: string;
+  readonly impactScore?: number | null;
+  readonly confidenceLevel?: string | null;
+  readonly estimatedRevenue?: RevenueEstimate | null;
+  readonly estimatedConversionLift?: PercentageField | null;
+  readonly estimatedAovImpact?: PercentageField | null;
+  readonly impactReasoning?: string | null;
+  readonly actionSteps?: readonly string[] | null;
+  readonly outcomeStatus?: string | null;
+  readonly outcomeData?: OutcomeData | null;
+  readonly linkedGoals?: readonly LinkedGoal[];
 }
 
 interface GoalExecutionCardProps {
   readonly execution: GoalExecution;
   readonly onExecute: (execution: GoalExecution) => void;
   readonly onDismiss: (id: string) => void;
+  readonly onMeasureOutcome?: (id: string) => void;
 }
 
 const CATEGORY_META: Record<
@@ -83,6 +120,11 @@ function getServerIcon(name: string): string {
 }
 
 const DEFAULT_NEXT_STEPS: Record<GoalExecution["category"], string[]> = {
+  catalog: [
+    "Review flagged catalog items",
+    `${AGENT_NAME} updates product data or listings`,
+    "Verify changes in your Shopify admin",
+  ],
   inventory: [
     "Review flagged products and stock levels",
     `${AGENT_NAME} adjusts inventory or creates purchase orders`,
@@ -97,6 +139,11 @@ const DEFAULT_NEXT_STEPS: Record<GoalExecution["category"], string[]> = {
     `${AGENT_NAME} compiles data from connected sources`,
     "Review the generated report or dashboard",
     "Export or share with your team",
+  ],
+  operations: [
+    "Review the operational issue identified",
+    `${AGENT_NAME} proposes process improvements`,
+    "Approve and apply changes",
   ],
   sync: [
     "Review which records are out of sync",
@@ -115,12 +162,35 @@ const DEFAULT_NEXT_STEPS: Record<GoalExecution["category"], string[]> = {
   ],
 };
 
+function formatCurrency(value: number, currency = "USD"): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function getImpactScoreColor(score: number): string {
+  if (score >= 70) return "#16A34A";
+  if (score >= 40) return "#D97706";
+  return "#9CA3AF";
+}
+
+const CONFIDENCE_META: Record<string, { label: string; color: string; bg: string }> = {
+  high: { label: "High Confidence", color: "#16A34A", bg: "#F0FDF4" },
+  medium: { label: "Medium Confidence", color: "#D97706", bg: "#FFFBEB" },
+  low: { label: "Low Confidence", color: "#64748B", bg: "#F1F5F9" },
+};
+
 export function GoalExecutionCard({
   execution,
   onExecute,
   onDismiss,
+  onMeasureOutcome,
 }: GoalExecutionCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [reasoningExpanded, setReasoningExpanded] = useState(false);
 
   const handleExecute = useCallback(() => {
     onExecute(execution);
@@ -130,13 +200,21 @@ export function GoalExecutionCard({
     onDismiss(execution.id);
   }, [execution.id, onDismiss]);
 
+  const handleMeasureOutcome = useCallback(() => {
+    onMeasureOutcome?.(execution.id);
+  }, [execution.id, onMeasureOutcome]);
+
   const isExecuting = execution.status === "in_progress";
   const isCompleted = execution.status === "completed";
   const isFailed = execution.status === "failed";
   const categoryMeta = CATEGORY_META[execution.category] ?? CATEGORY_META.general;
   const priorityMeta = PRIORITY_META[execution.priority] ?? PRIORITY_META.medium;
   const statusConfig = STATUS_CONFIG[execution.status];
-  const nextSteps = DEFAULT_NEXT_STEPS[execution.category] ?? DEFAULT_NEXT_STEPS.general;
+  const actionSteps = execution.actionSteps ?? DEFAULT_NEXT_STEPS[execution.category] ?? DEFAULT_NEXT_STEPS.general;
+  const hasImpact = execution.impactScore != null && execution.impactScore > 0;
+  const confidenceMeta = execution.confidenceLevel
+    ? CONFIDENCE_META[execution.confidenceLevel] ?? CONFIDENCE_META.low
+    : null;
 
   return (
     <div
@@ -165,7 +243,7 @@ export function GoalExecutionCard({
       <div style={{ height: 4, background: categoryMeta.color }} />
 
       <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
-        {/* Header */}
+        {/* Header badges */}
         <div
           style={{
             display: "flex",
@@ -220,27 +298,91 @@ export function GoalExecutionCard({
             </span>
           </div>
 
-          {execution.status !== "pending" && (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "4px 12px",
-                borderRadius: 6,
-                fontSize: 12,
-                fontWeight: 500,
-                background: statusConfig.bg,
-                color: statusConfig.color,
-              }}
-            >
-              {isExecuting && (
-                <s-spinner size="base" accessibilityLabel="Running" />
-              )}
-              {statusConfig.label}
-            </span>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {hasImpact && (
+              <span
+                style={{
+                  fontSize: 20,
+                  fontWeight: 700,
+                  color: getImpactScoreColor(execution.impactScore!),
+                  lineHeight: 1,
+                }}
+              >
+                {execution.impactScore}
+              </span>
+            )}
+            {execution.status !== "pending" && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 12px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  background: statusConfig.bg,
+                  color: statusConfig.color,
+                }}
+              >
+                {isExecuting && (
+                  <s-spinner size="base" accessibilityLabel="Running" />
+                )}
+                {statusConfig.label}
+              </span>
+            )}
+          </div>
         </div>
+
+        {/* Impact section */}
+        {hasImpact && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            {confidenceMeta && (
+              <span
+                style={{
+                  padding: "3px 10px",
+                  borderRadius: 12,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  background: confidenceMeta.bg,
+                  color: confidenceMeta.color,
+                }}
+              >
+                {confidenceMeta.label}
+              </span>
+            )}
+            {execution.estimatedRevenue && (
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "#16A34A",
+                }}
+              >
+                {formatCurrency(execution.estimatedRevenue.min, execution.estimatedRevenue.currency)}
+                {" – "}
+                {formatCurrency(execution.estimatedRevenue.max, execution.estimatedRevenue.currency)}
+              </span>
+            )}
+            {execution.estimatedConversionLift?.percentage != null && (
+              <span style={{ fontSize: 12, color: "var(--s-color-text-secondary, #616161)" }}>
+                +{execution.estimatedConversionLift.percentage}% conv.
+              </span>
+            )}
+            {execution.estimatedAovImpact?.percentage != null && (
+              <span style={{ fontSize: 12, color: "var(--s-color-text-secondary, #616161)" }}>
+                +{execution.estimatedAovImpact.percentage}% AOV
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Title */}
         <h3
@@ -267,6 +409,34 @@ export function GoalExecutionCard({
           {execution.description}
         </p>
 
+        {/* Linked goals chips */}
+        {execution.linkedGoals && execution.linkedGoals.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {execution.linkedGoals.map((goal) => {
+              const goalCatMeta = CATEGORY_META[goal.category as GoalExecution["category"]] ?? CATEGORY_META.general;
+              return (
+                <span
+                  key={goal.id}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "3px 10px",
+                    borderRadius: 12,
+                    fontSize: 11,
+                    fontWeight: 500,
+                    background: goalCatMeta.color + "12",
+                    color: goalCatMeta.color,
+                    border: `1px solid ${goalCatMeta.color}25`,
+                  }}
+                >
+                  {goal.title}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
         {/* Data sources */}
         {execution.mcpServersUsed.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -291,7 +461,49 @@ export function GoalExecutionCard({
           </div>
         )}
 
-        {/* Next Steps */}
+        {/* Impact reasoning (expandable) */}
+        {execution.impactReasoning && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setReasoningExpanded(!reasoningExpanded)}
+              style={{
+                all: "unset",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--s-color-text-secondary, #616161)",
+                fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+              }}
+            >
+              <span style={{ fontSize: 10, color: "#999", transition: "transform 0.2s" }}>
+                {reasoningExpanded ? "▼" : "▶"}
+              </span>
+              Why this impact
+            </button>
+            {reasoningExpanded && (
+              <p
+                style={{
+                  marginTop: 8,
+                  fontSize: 13,
+                  color: "var(--s-color-text-secondary, #616161)",
+                  lineHeight: 1.6,
+                  padding: "10px 14px",
+                  background: "var(--s-color-bg-surface-secondary, #f6f6f7)",
+                  borderRadius: 10,
+                  margin: "8px 0 0",
+                }}
+              >
+                {execution.impactReasoning}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Action Steps */}
         <div
           style={{
             borderTop: "1px solid var(--s-color-border-secondary, #e3e3e3)",
@@ -317,7 +529,7 @@ export function GoalExecutionCard({
             <span style={{ fontSize: 10, color: "#999", transition: "transform 0.2s" }}>
               {expanded ? "▼" : "▶"}
             </span>
-            What happens when you execute
+            {execution.actionSteps ? "Action steps" : "What happens when you execute"}
           </button>
 
           {expanded && (
@@ -331,7 +543,7 @@ export function GoalExecutionCard({
                   gap: 10,
                 }}
               >
-                {nextSteps.map((step, i) => (
+                {actionSteps.map((step, i) => (
                   <li
                     key={i}
                     style={{
@@ -354,6 +566,105 @@ export function GoalExecutionCard({
             </div>
           )}
         </div>
+
+        {/* Outcome section */}
+        {execution.outcomeStatus && (
+          <div
+            style={{
+              borderTop: "1px solid var(--s-color-border-secondary, #e3e3e3)",
+              paddingTop: 16,
+            }}
+          >
+            {execution.outcomeStatus === "pending_measurement" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={handleMeasureOutcome}
+                  style={{
+                    padding: "8px 16px",
+                    background: "#EFF6FF",
+                    color: "#2563EB",
+                    border: "1px solid #BFDBFE",
+                    borderRadius: 8,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+                  }}
+                >
+                  Measure Impact
+                </button>
+                <span style={{ fontSize: 12, color: "var(--s-color-text-secondary, #999)" }}>
+                  Awaiting measurement
+                </span>
+              </div>
+            )}
+            {execution.outcomeStatus === "measured" && execution.outcomeData && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--s-color-text, #1a1a1a)" }}>
+                  Measured Outcome
+                </div>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                  {execution.outcomeData.revenueDelta != null && (
+                    <div>
+                      <div style={{ fontSize: 11, color: "var(--s-color-text-secondary, #999)" }}>Revenue</div>
+                      <div style={{
+                        fontSize: 15,
+                        fontWeight: 600,
+                        color: execution.outcomeData.revenueDelta >= 0 ? "#16A34A" : "#DC2626",
+                      }}>
+                        {execution.outcomeData.revenueDelta >= 0 ? "+" : ""}
+                        {formatCurrency(execution.outcomeData.revenueDelta)}
+                        {execution.outcomeData.revenueDeltaPercent != null && (
+                          <span style={{ fontSize: 12, fontWeight: 500, marginLeft: 4 }}>
+                            ({execution.outcomeData.revenueDeltaPercent >= 0 ? "+" : ""}
+                            {execution.outcomeData.revenueDeltaPercent.toFixed(1)}%)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {execution.outcomeData.aovDelta != null && (
+                    <div>
+                      <div style={{ fontSize: 11, color: "var(--s-color-text-secondary, #999)" }}>AOV</div>
+                      <div style={{
+                        fontSize: 15,
+                        fontWeight: 600,
+                        color: execution.outcomeData.aovDelta >= 0 ? "#16A34A" : "#DC2626",
+                      }}>
+                        {execution.outcomeData.aovDelta >= 0 ? "+" : ""}
+                        {formatCurrency(execution.outcomeData.aovDelta)}
+                      </div>
+                    </div>
+                  )}
+                  {execution.outcomeData.orderCountDelta != null && (
+                    <div>
+                      <div style={{ fontSize: 11, color: "var(--s-color-text-secondary, #999)" }}>Orders</div>
+                      <div style={{
+                        fontSize: 15,
+                        fontWeight: 600,
+                        color: execution.outcomeData.orderCountDelta >= 0 ? "#16A34A" : "#DC2626",
+                      }}>
+                        {execution.outcomeData.orderCountDelta >= 0 ? "+" : ""}
+                        {execution.outcomeData.orderCountDelta}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {execution.outcomeData.summary && (
+                  <p style={{ fontSize: 12, color: "var(--s-color-text-secondary, #616161)", margin: 0, lineHeight: 1.5 }}>
+                    {execution.outcomeData.summary}
+                  </p>
+                )}
+              </div>
+            )}
+            {execution.outcomeStatus === "inconclusive" && (
+              <div style={{ fontSize: 12, color: "var(--s-color-text-secondary, #999)" }}>
+                Outcome measurement was inconclusive.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Action buttons */}
         <div style={{ display: "flex", gap: 10, paddingTop: 4 }}>

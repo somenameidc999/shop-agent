@@ -13,6 +13,10 @@ vi.mock("../../app/db.server", () => ({
     goal: {
       findMany: vi.fn(),
     },
+    goalExecutionGoal: {
+      upsert: vi.fn(),
+      deleteMany: vi.fn(),
+    },
   },
 }));
 
@@ -41,6 +45,7 @@ import {
   analyzeGoals,
   executeGoalExecution,
   dismissGoalExecution,
+  computeImpactScore,
 } from "../../app/services/goals.server";
 
 const mockPrisma = vi.mocked(prisma);
@@ -61,10 +66,22 @@ function makeExec(overrides: Record<string, unknown> = {}) {
     metadata: null,
     status: "new",
     resultSummary: null,
+    impactScore: null,
+    confidenceLevel: null,
+    estimatedRevenue: null,
+    estimatedConversionLift: null,
+    estimatedAovImpact: null,
+    impactReasoning: null,
+    actionSteps: null,
+    outcomeStatus: null,
+    outcomeData: null,
+    outcomeMeasuredAt: null,
+    baselineData: null,
     expiresAt: null,
     executedAt: null,
     createdAt: new Date("2026-02-28T00:00:00Z"),
     updatedAt: new Date("2026-02-28T00:00:00Z"),
+    goalExecutionLinks: [],
     ...overrides,
   };
 }
@@ -80,10 +97,108 @@ function makeGoal(overrides: Record<string, unknown> = {}) {
     priority: "high",
     actionPrompt: "Fix inventory",
     cronIntervalMins: 60,
+    outcomeMeasureDays: 7,
     enabled: true,
+    title: "Low Inventory",
+    description: "Check for low inventory",
     ...overrides,
   };
 }
+
+// ---------------------------------------------------------------------------
+// computeImpactScore
+// ---------------------------------------------------------------------------
+
+describe("computeImpactScore", () => {
+  it("returns 0 when impact is undefined", () => {
+    expect(computeImpactScore(undefined)).toBe(0);
+  });
+
+  it("applies high confidence multiplier (1.0)", () => {
+    const score = computeImpactScore({
+      revenueEstimate: { min: 1000, max: 3000, currency: "USD" },
+      confidence: "high",
+      reasoning: "Strong data",
+    });
+    // revScore = min((1000+3000)/2 / 100, 50) = min(20, 50) = 20
+    // convScore = 0, aovScore = 0
+    // (20 + 0 + 0) * 1.0 = 20
+    expect(score).toBe(20);
+  });
+
+  it("applies medium confidence multiplier (0.6)", () => {
+    const score = computeImpactScore({
+      revenueEstimate: { min: 1000, max: 3000, currency: "USD" },
+      confidence: "medium",
+      reasoning: "Some data",
+    });
+    // (20) * 0.6 = 12
+    expect(score).toBe(12);
+  });
+
+  it("applies low confidence multiplier (0.3)", () => {
+    const score = computeImpactScore({
+      revenueEstimate: { min: 1000, max: 3000, currency: "USD" },
+      confidence: "low",
+      reasoning: "Little data",
+    });
+    // (20) * 0.3 = 6
+    expect(score).toBe(6);
+  });
+
+  it("caps revenue score at 50", () => {
+    const score = computeImpactScore({
+      revenueEstimate: { min: 50000, max: 100000, currency: "USD" },
+      confidence: "high",
+      reasoning: "Huge opportunity",
+    });
+    // revScore = min(75000/100, 50) = 50
+    // 50 * 1.0 = 50
+    expect(score).toBe(50);
+  });
+
+  it("includes conversion lift and AOV impact", () => {
+    const score = computeImpactScore({
+      revenueEstimate: { min: 0, max: 0, currency: "USD" },
+      conversionLiftPercent: 5,
+      aovImpactPercent: 4,
+      confidence: "high",
+      reasoning: "Good data",
+    });
+    // revScore = 0, convScore = 5*2 = 10, aovScore = 4*1.5 = 6
+    // (0 + 10 + 6) * 1.0 = 16
+    expect(score).toBe(16);
+  });
+
+  it("combines all factors correctly", () => {
+    const score = computeImpactScore({
+      revenueEstimate: { min: 500, max: 1500, currency: "USD" },
+      conversionLiftPercent: 3,
+      aovImpactPercent: 2,
+      confidence: "high",
+      reasoning: "Data-driven",
+    });
+    // revScore = min((500+1500)/2 / 100, 50) = min(10, 50) = 10
+    // convScore = 3*2 = 6, aovScore = 2*1.5 = 3
+    // (10 + 6 + 3) * 1.0 = 19
+    expect(score).toBe(19);
+  });
+
+  it("rounds to nearest integer", () => {
+    const score = computeImpactScore({
+      conversionLiftPercent: 1.5,
+      confidence: "medium",
+      reasoning: "Test",
+    });
+    // convScore = 1.5*2 = 3
+    // 3 * 0.6 = 1.8 → rounds to 2
+    expect(score).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getGoalExecutionsForShop
+// ---------------------------------------------------------------------------
 
 describe("getGoalExecutionsForShop", () => {
   beforeEach(() => {
@@ -119,6 +234,20 @@ describe("getGoalExecutionsForShop", () => {
     });
   });
 
+  it("passes goalId filter to prisma where clause", async () => {
+    mockPrisma.goalExecution.findMany.mockResolvedValue([]);
+
+    await getGoalExecutionsForShop("shop.myshopify.com", {
+      goalId: "goal-123",
+    });
+
+    const callArgs = (mockPrisma.goalExecution.findMany as Mock).mock.calls[0][0];
+    expect(callArgs.where).toMatchObject({
+      shop: "shop.myshopify.com",
+      goalId: "goal-123",
+    });
+  });
+
   it("sorts by priority order: critical > high > medium > low", async () => {
     const execs = [
       makeExec({ id: "r-low", priority: "low", createdAt: new Date("2026-02-28T04:00:00Z") }),
@@ -133,6 +262,40 @@ describe("getGoalExecutionsForShop", () => {
 
     const priorities = result.data.map((r: any) => r.priority);
     expect(priorities).toEqual(["critical", "high", "medium", "low"]);
+  });
+
+  it("sorts by impactScore when sortBy=impactScore", async () => {
+    const execs = [
+      makeExec({ id: "r-low", impactScore: 10, createdAt: new Date("2026-02-28T01:00:00Z") }),
+      makeExec({ id: "r-high", impactScore: 80, createdAt: new Date("2026-02-28T02:00:00Z") }),
+      makeExec({ id: "r-med", impactScore: 45, createdAt: new Date("2026-02-28T03:00:00Z") }),
+    ];
+
+    mockPrisma.goalExecution.findMany.mockResolvedValue(execs as any);
+
+    const result = await getGoalExecutionsForShop("shop.myshopify.com", {
+      sortBy: "impactScore",
+    });
+
+    const ids = result.data.map((r: any) => r.id);
+    expect(ids).toEqual(["r-high", "r-med", "r-low"]);
+  });
+
+  it("sorts by newest when sortBy=newest", async () => {
+    const execs = [
+      makeExec({ id: "r-old", createdAt: new Date("2026-02-28T01:00:00Z") }),
+      makeExec({ id: "r-new", createdAt: new Date("2026-02-28T03:00:00Z") }),
+      makeExec({ id: "r-mid", createdAt: new Date("2026-02-28T02:00:00Z") }),
+    ];
+
+    mockPrisma.goalExecution.findMany.mockResolvedValue(execs as any);
+
+    const result = await getGoalExecutionsForShop("shop.myshopify.com", {
+      sortBy: "newest",
+    });
+
+    const ids = result.data.map((r: any) => r.id);
+    expect(ids).toEqual(["r-new", "r-mid", "r-old"]);
   });
 
   it("slices results correctly with pagination", async () => {
@@ -153,6 +316,10 @@ describe("getGoalExecutionsForShop", () => {
     expect(result.data[2].id).toBe("r-4");
   });
 });
+
+// ---------------------------------------------------------------------------
+// analyzeGoals
+// ---------------------------------------------------------------------------
 
 describe("analyzeGoals", () => {
   beforeEach(() => {
@@ -215,7 +382,7 @@ describe("analyzeGoals", () => {
       setupConnectedServers(["shopify"]);
     });
 
-    it("creates a new execution when AI says applicable and no existing", async () => {
+    it("creates a new execution with impact data when AI says applicable", async () => {
       const goal = makeGoal({ id: "goal-new", ruleKey: "new-rule" });
       mockPrisma.goal.findMany.mockResolvedValue([goal] as any);
 
@@ -223,7 +390,14 @@ describe("analyzeGoals", () => {
         text: JSON.stringify({
           applicable: true,
           title: "Restock Widget",
-          description: "Widget inventory is low",
+          description: "Widget inventory is low — 3 units left, selling ~2/day",
+          impact: {
+            revenueEstimate: { min: 500, max: 2000, currency: "USD" },
+            conversionLiftPercent: 3,
+            confidence: "high",
+            reasoning: "Based on 30 days of sales data",
+          },
+          actionSteps: ["Check inventory", "Create purchase order"],
         }),
       } as any);
 
@@ -231,6 +405,7 @@ describe("analyzeGoals", () => {
       mockPrisma.goalExecution.create.mockResolvedValue(
         makeExec({ id: "new-exec-id", goalId: "goal-new" }) as any,
       );
+      (mockPrisma.goalExecutionGoal as any).upsert.mockResolvedValue({});
 
       const result = await analyzeGoals("test.myshopify.com");
 
@@ -240,6 +415,41 @@ describe("analyzeGoals", () => {
         status: "created",
       });
       expect(mockPrisma.goalExecution.create).toHaveBeenCalledTimes(1);
+
+      // Verify impact fields were passed
+      const createCall = (mockPrisma.goalExecution.create as Mock).mock.calls[0][0];
+      expect(createCall.data.impactScore).toBeGreaterThan(0);
+      expect(createCall.data.confidenceLevel).toBe("high");
+      expect(createCall.data.estimatedRevenue).toBeTruthy();
+      expect(createCall.data.actionSteps).toBeTruthy();
+    });
+
+    it("creates multi-goal links when AI returns relatedGoalKeys", async () => {
+      const goal1 = makeGoal({ id: "goal-1", ruleKey: "rule-1" });
+      const goal2 = makeGoal({ id: "goal-2", ruleKey: "rule-2" });
+      mockPrisma.goal.findMany
+        .mockResolvedValueOnce([goal1, goal2] as any) // enabled goals
+        .mockResolvedValueOnce([{ id: "goal-2" }] as any); // related goals lookup
+
+      mockGenerateText.mockResolvedValue({
+        text: JSON.stringify({
+          applicable: true,
+          title: "Cross-goal finding",
+          description: "Relevant to multiple goals",
+          relatedGoalKeys: ["rule-2"],
+        }),
+      } as any);
+
+      mockPrisma.goalExecution.findFirst.mockResolvedValue(null);
+      mockPrisma.goalExecution.create.mockResolvedValue(
+        makeExec({ id: "exec-multi", goalId: "goal-1" }) as any,
+      );
+      (mockPrisma.goalExecutionGoal as any).upsert.mockResolvedValue({});
+
+      await analyzeGoals("test.myshopify.com");
+
+      // Should create at least 2 upsert calls: primary + related goal
+      expect((mockPrisma.goalExecutionGoal as any).upsert).toHaveBeenCalled();
     });
 
     it("returns not_applicable when AI says not applicable", async () => {
@@ -279,6 +489,10 @@ describe("analyzeGoals", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// executeGoalExecution
+// ---------------------------------------------------------------------------
+
 describe("executeGoalExecution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -293,7 +507,7 @@ describe("executeGoalExecution", () => {
   });
 
   it("returns early when already executed", async () => {
-    const exec = makeExec({ id: "exec-id", status: "executed" });
+    const exec = makeExec({ id: "exec-id", status: "executed", goal: makeGoal() });
     mockPrisma.goalExecution.findUnique.mockResolvedValue(exec as any);
 
     const result = await executeGoalExecution("exec-id");
@@ -303,16 +517,16 @@ describe("executeGoalExecution", () => {
     expect(mockGenerateText).not.toHaveBeenCalled();
   });
 
-  it("on success: updates status to executed with resultSummary", async () => {
-    const exec = makeExec({ id: "bg-id", status: "new" });
+  it("on success: updates status to executed with resultSummary and outcomeStatus", async () => {
+    const exec = makeExec({ id: "bg-id", status: "new", goal: makeGoal() });
     mockPrisma.goalExecution.findUnique.mockResolvedValue(exec as any);
     mockMcpManager.ensureInitialized.mockResolvedValue(undefined);
     mockMcpManager.getToolsForAI.mockResolvedValue({ shopify_query: {} } as any);
 
     mockPrisma.goalExecution.update
-      .mockResolvedValueOnce(makeExec({ status: "executing" }) as any)
+      .mockResolvedValueOnce(makeExec({ status: "executing" }) as any)  // baseline capture
       .mockResolvedValueOnce(
-        makeExec({ id: "bg-id", status: "executed", resultSummary: "Done!" }) as any,
+        makeExec({ id: "bg-id", status: "executed", resultSummary: "Done!", outcomeStatus: "pending_measurement" }) as any,
       );
 
     mockGenerateText.mockResolvedValue({ text: "Done!" } as any);
@@ -323,7 +537,7 @@ describe("executeGoalExecution", () => {
   });
 
   it("on AI error: updates status to error and re-throws", async () => {
-    const exec = makeExec({ id: "err-id", status: "new" });
+    const exec = makeExec({ id: "err-id", status: "new", goal: makeGoal() });
     mockPrisma.goalExecution.findUnique.mockResolvedValue(exec as any);
     mockMcpManager.ensureInitialized.mockResolvedValue(undefined);
     mockMcpManager.getToolsForAI.mockResolvedValue({} as any);
@@ -338,6 +552,10 @@ describe("executeGoalExecution", () => {
     await expect(executeGoalExecution("err-id")).rejects.toThrow("AI service unavailable");
   });
 });
+
+// ---------------------------------------------------------------------------
+// dismissGoalExecution
+// ---------------------------------------------------------------------------
 
 describe("dismissGoalExecution", () => {
   beforeEach(() => {

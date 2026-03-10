@@ -5,7 +5,9 @@
  * - CRUD operations for goals
  * - AI inference for goal prompts and category
  * - Generates goal executions by analyzing shop data with AI
+ * - Impact scoring and multi-goal linking
  * - Executes background actions for goal executions
+ * - Outcome measurement and tracking
  * - Handles goal execution dismissal
  */
 
@@ -22,7 +24,7 @@ const ANALYSIS_TIMEOUT_MS = 60_000;
 const ANALYSIS_STEP_TIMEOUT_MS = 15_000;
 const EXECUTION_TIMEOUT_MS = 60_000;
 const EXECUTION_STEP_TIMEOUT_MS = 20_000;
-const MAX_TOOL_STEPS = 3;
+const MAX_TOOL_STEPS = 5;
 const BATCH_CONCURRENCY = 3;
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1_000;
@@ -35,6 +37,8 @@ interface GoalExecutionFilters {
   status?: string;
   category?: string;
   priority?: string;
+  goalId?: string;
+  sortBy?: "impactScore" | "priority" | "newest";
 }
 
 interface AIVerdictResponse {
@@ -42,6 +46,15 @@ interface AIVerdictResponse {
   title: string;
   description: string;
   metadata?: Record<string, unknown>;
+  impact?: {
+    revenueEstimate?: { min: number; max: number; currency: string };
+    conversionLiftPercent?: number;
+    aovImpactPercent?: number;
+    confidence: "low" | "medium" | "high";
+    reasoning: string;
+  };
+  actionSteps?: string[];
+  relatedGoalKeys?: string[];
 }
 
 interface GoalAnalysisResult {
@@ -64,6 +77,7 @@ export interface CreateGoalInput {
   description: string;
   priority?: string;
   cronIntervalMins?: number;
+  outcomeMeasureDays?: number;
   category?: string;
   analysisPrompt?: string;
   actionPrompt?: string;
@@ -158,9 +172,42 @@ function slugify(text: string): string {
     .slice(0, 64);
 }
 
+// ---------------------------------------------------------------------------
+// Impact Score Computation
+// ---------------------------------------------------------------------------
+
+export function computeImpactScore(impact: AIVerdictResponse["impact"]): number {
+  if (!impact) return 0;
+  const multiplier = { low: 0.3, medium: 0.6, high: 1.0 }[impact.confidence];
+  const revScore = impact.revenueEstimate
+    ? Math.min(((impact.revenueEstimate.min + impact.revenueEstimate.max) / 2) / 100, 50)
+    : 0;
+  const convScore = (impact.conversionLiftPercent ?? 0) * 2;
+  const aovScore = (impact.aovImpactPercent ?? 0) * 1.5;
+  return Math.round((revScore + convScore + aovScore) * multiplier);
+}
+
+// ---------------------------------------------------------------------------
+// System Prompt
+// ---------------------------------------------------------------------------
+
 const ANALYSIS_SYSTEM_PROMPT = `You are an AI assistant analyzing a Shopify merchant's data to determine if a goal action is applicable.
 
 You have access to tools from connected data sources. Use them to gather information.
+
+ANALYSIS WORKFLOW — follow this order:
+1. First, query recent orders (last 30 days) to establish baseline metrics: total revenue, average order value (AOV), order count.
+2. Then query goal-specific data relevant to the analysis prompt.
+3. Calculate trends and projections from the actual numbers you gathered.
+4. Estimate impact grounded in real data. For example: "average order is $85, this optimization could add 1 item per order → $12-15 AOV increase → ~$X revenue/month"
+5. Rate your confidence based on data quality:
+   - "high": 30+ days of order data available
+   - "medium": 7-30 days of data
+   - "low": <7 days of data or sparse data
+6. Identify specific action steps the agent should take.
+7. Flag relatedGoalKeys if the finding is relevant to other goals in the list.
+
+IMPORTANT — be CONSERVATIVE with impact estimates. Under-promise, over-deliver. When uncertain, use the lower bound. Flag uncertainty explicitly in your reasoning.
 
 SHOPIFY TOOL GUIDANCE:
 - For reading Shopify data, ALWAYS use the shopify_query tool. It handles GraphQL Relay patterns automatically.
@@ -180,16 +227,27 @@ After your analysis, respond with ONLY a JSON object (no markdown fences, no ext
 
 {
   "applicable": <boolean — true if the goal action is relevant>,
-  "title": "<clear, actionable title>",
-  "description": "<why this matters and what the merchant should do>",
-  "metadata": { <optional additional context or data points> }
+  "title": "<clear, actionable title with specific data points>",
+  "description": "<why this matters, grounded in real numbers from the shop>",
+  "metadata": { <optional additional context or data points> },
+  "impact": {
+    "revenueEstimate": { "min": <number>, "max": <number>, "currency": "USD" },
+    "conversionLiftPercent": <number or null>,
+    "aovImpactPercent": <number or null>,
+    "confidence": "<low | medium | high>",
+    "reasoning": "<1-2 sentences explaining why this impact is achievable based on the data>"
+  },
+  "actionSteps": ["<specific step 1>", "<specific step 2>", ...],
+  "relatedGoalKeys": ["<ruleKey of related goal if any>"]
 }
 
 Rules:
 - "applicable" must be a boolean. Set to true only if the data supports the action.
-- Keep "title" under 80 characters.
-- Keep "description" under 300 characters.
-- "metadata" is optional; omit or set to {} if nothing extra.
+- Keep "title" under 80 characters. Include specific numbers when possible.
+- Keep "description" under 300 characters. Reference actual shop data.
+- "impact" is required when applicable is true. Estimate conservatively.
+- "actionSteps" should be specific, actionable steps (not generic advice).
+- "relatedGoalKeys" lists ruleKeys of other goals this finding relates to. Omit if none.
 - Do NOT wrap the JSON in markdown code fences.`;
 
 // ---------------------------------------------------------------------------
@@ -222,6 +280,7 @@ export async function createGoal(shop: string, input: CreateGoalInput) {
       analysisPrompt: input.analysisPrompt ?? "",
       actionPrompt: input.actionPrompt ?? "",
       cronIntervalMins: input.cronIntervalMins ?? 240,
+      outcomeMeasureDays: input.outcomeMeasureDays ?? 7,
     },
   });
 }
@@ -239,6 +298,7 @@ export async function updateGoal(
   if (data.analysisPrompt !== undefined) updateData.analysisPrompt = data.analysisPrompt;
   if (data.actionPrompt !== undefined) updateData.actionPrompt = data.actionPrompt;
   if (data.cronIntervalMins !== undefined) updateData.cronIntervalMins = data.cronIntervalMins;
+  if (data.outcomeMeasureDays !== undefined) updateData.outcomeMeasureDays = data.outcomeMeasureDays;
   if (data.enabled !== undefined) updateData.enabled = data.enabled;
   if (data.requiredServers !== undefined) updateData.requiredServers = JSON.stringify(data.requiredServers);
 
@@ -246,6 +306,9 @@ export async function updateGoal(
 }
 
 export async function deleteGoal(id: string) {
+  await prisma.goalExecutionGoal.deleteMany({
+    where: { goal: { id } },
+  });
   await prisma.goalExecution.deleteMany({ where: { goalId: id } });
   return prisma.goal.delete({ where: { id } });
 }
@@ -332,11 +395,13 @@ export async function getGoalExecutionsForShop(
     status?: string;
     category?: string;
     priority?: string;
+    goalId?: string;
   } = { shop };
 
   if (filters?.status) where.status = filters.status;
   if (filters?.category) where.category = filters.category;
   if (filters?.priority) where.priority = filters.priority;
+  if (filters?.goalId) where.goalId = filters.goalId;
 
   const now = new Date();
   const results = await prisma.goalExecution.findMany({
@@ -344,10 +409,31 @@ export async function getGoalExecutionsForShop(
       ...where,
       OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
     },
+    include: {
+      goalExecutionLinks: {
+        include: {
+          goal: {
+            select: { id: true, title: true, ruleKey: true, category: true },
+          },
+        },
+      },
+    },
     orderBy: [{ createdAt: "desc" }],
   });
 
+  const sortBy = filters?.sortBy ?? "priority";
+
   results.sort((a, b) => {
+    if (sortBy === "impactScore") {
+      const scoreA = a.impactScore ?? 0;
+      const scoreB = b.impactScore ?? 0;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    }
+    if (sortBy === "newest") {
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    }
+    // Default: priority
     const pa = PRIORITY_ORDER[a.priority] ?? 99;
     const pb = PRIORITY_ORDER[b.priority] ?? 99;
     if (pa !== pb) return pa - pb;
@@ -412,10 +498,18 @@ export async function analyzeGoals(shop: string) {
   const tools = await mcpManager.getToolsForAI();
   const hasTools = Object.keys(tools).length > 0;
 
+  // Build goal context for multi-goal linking
+  const allGoalContext = goals.map((g) => ({
+    ruleKey: g.ruleKey,
+    title: g.title,
+    description: g.description,
+    category: g.category,
+  }));
+
   const results = await batchProcess<(typeof applicableGoals)[number], GoalAnalysisResult>(
     applicableGoals,
     BATCH_CONCURRENCY,
-    (goal) => analyzeGoal(goal, shop, tools, hasTools),
+    (goal) => analyzeGoal(goal, shop, tools, hasTools, allGoalContext),
   );
 
   console.info(
@@ -443,15 +537,26 @@ async function analyzeGoal(
   shop: string,
   tools: Record<string, unknown>,
   hasTools: boolean,
+  allGoalContext: Array<{ ruleKey: string; title: string; description: string; category: string }>,
 ): Promise<GoalAnalysisResult> {
   try {
+    // Build context about other goals for multi-goal linking
+    const otherGoals = allGoalContext
+      .filter((g) => g.ruleKey !== goal.ruleKey)
+      .map((g) => `- ${g.ruleKey}: "${g.title}" (${g.category})`)
+      .join("\n");
+
+    const goalContextPrompt = otherGoals
+      ? `\n\nOther active goals (flag relatedGoalKeys if your finding is relevant to any):\n${otherGoals}`
+      : "";
+
     const verdict = await withRetry(async () => {
       console.info(`[Goals] Analyzing goal: ${goal.ruleKey}`);
 
       const response = await generateText({
         model: openai("gpt-4o-mini"),
         system: ANALYSIS_SYSTEM_PROMPT,
-        prompt: goal.analysisPrompt,
+        prompt: goal.analysisPrompt + goalContextPrompt,
         ...(hasTools
           ? {
               tools: tools as Parameters<typeof generateText>[0]["tools"],
@@ -495,6 +600,9 @@ async function analyzeGoal(
       return { goalId: goal.id, ruleKey: goal.ruleKey, status: "not_applicable" as const };
     }
 
+    // Compute impact score
+    const impactScore = computeImpactScore(verdict.impact);
+
     const data = {
       title: verdict.title,
       description: verdict.description,
@@ -505,6 +613,21 @@ async function analyzeGoal(
       metadata: verdict.metadata ? JSON.stringify(verdict.metadata) : null,
       status: "new",
       expiresAt: new Date(Date.now() + goal.cronIntervalMins * 60 * 1000),
+      impactScore,
+      confidenceLevel: verdict.impact?.confidence ?? null,
+      estimatedRevenue: verdict.impact?.revenueEstimate
+        ? JSON.stringify(verdict.impact.revenueEstimate)
+        : null,
+      estimatedConversionLift: verdict.impact?.conversionLiftPercent != null
+        ? JSON.stringify({ percentage: verdict.impact.conversionLiftPercent })
+        : null,
+      estimatedAovImpact: verdict.impact?.aovImpactPercent != null
+        ? JSON.stringify({ percentage: verdict.impact.aovImpactPercent })
+        : null,
+      impactReasoning: verdict.impact?.reasoning ?? null,
+      actionSteps: verdict.actionSteps
+        ? JSON.stringify(verdict.actionSteps)
+        : null,
     };
 
     const execution = existing
@@ -516,8 +639,45 @@ async function analyzeGoal(
           data: { shop, goalId: goal.id, ...data },
         });
 
+    // Create multi-goal links
+    // Always link to the primary goal
+    await prisma.goalExecutionGoal.upsert({
+      where: {
+        goalExecutionId_goalId: {
+          goalExecutionId: execution.id,
+          goalId: goal.id,
+        },
+      },
+      create: { goalExecutionId: execution.id, goalId: goal.id },
+      update: {},
+    });
+
+    // Link to related goals
+    if (verdict.relatedGoalKeys && verdict.relatedGoalKeys.length > 0) {
+      const relatedGoals = await prisma.goal.findMany({
+        where: {
+          shop,
+          ruleKey: { in: verdict.relatedGoalKeys },
+        },
+        select: { id: true },
+      });
+
+      for (const related of relatedGoals) {
+        await prisma.goalExecutionGoal.upsert({
+          where: {
+            goalExecutionId_goalId: {
+              goalExecutionId: execution.id,
+              goalId: related.id,
+            },
+          },
+          create: { goalExecutionId: execution.id, goalId: related.id },
+          update: {},
+        });
+      }
+    }
+
     console.info(
-      `[Goals] Created/updated execution ${execution.id} for goal "${goal.ruleKey}"`,
+      `[Goals] Created/updated execution ${execution.id} for goal "${goal.ruleKey}" (impact: ${impactScore})`,
     );
 
     return {
@@ -544,6 +704,7 @@ export async function executeGoalExecution(id: string) {
 
   const execution = await prisma.goalExecution.findUnique({
     where: { id },
+    include: { goal: true },
   });
 
   if (!execution) {
@@ -561,9 +722,40 @@ export async function executeGoalExecution(id: string) {
   const hasTools = Object.keys(tools).length > 0;
 
   try {
+    // Capture baseline data before execution
+    let baselineData: string | null = null;
+    if (hasTools) {
+      try {
+        const baselineResponse = await generateText({
+          model: openai("gpt-4o-mini"),
+          system: `You are a data collector. Query the shop's recent 7-day metrics and return ONLY a JSON object with these fields:
+{
+  "revenue7d": <total revenue last 7 days as number>,
+  "orderCount7d": <number of orders last 7 days>,
+  "aov7d": <average order value last 7 days as number>,
+  "collectedAt": "<ISO timestamp>"
+}
+Use shopify_query to get orders from the last 7 days. If you cannot gather data, return null values.`,
+          prompt: "Collect baseline metrics for the last 7 days.",
+          tools: tools as Parameters<typeof generateText>[0]["tools"],
+          stopWhen: stepCountIs(3),
+          timeout: { totalMs: 30_000, stepMs: 10_000 },
+        });
+        const parsedBaseline = extractJSON(baselineResponse.text);
+        if (parsedBaseline) {
+          baselineData = JSON.stringify(parsedBaseline);
+        }
+      } catch (err) {
+        console.warn(`[Goals] Failed to capture baseline data for ${id}:`, err);
+      }
+    }
+
     await prisma.goalExecution.update({
       where: { id },
-      data: { status: "executing" },
+      data: {
+        status: "executing",
+        baselineData,
+      },
     });
 
     const response = await generateText({
@@ -605,6 +797,7 @@ Please execute this action and provide a summary of the results.`,
         status: "executed",
         resultSummary: response.text,
         executedAt: new Date(),
+        outcomeStatus: "pending_measurement",
       },
     });
 
@@ -636,4 +829,101 @@ export async function dismissGoalExecution(id: string) {
       updatedAt: new Date(),
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Outcome Measurement
+// ---------------------------------------------------------------------------
+
+export async function measureOutcome(executionId: string) {
+  console.info(`[Goals] Measuring outcome for execution: ${executionId}`);
+
+  const execution = await prisma.goalExecution.findUnique({
+    where: { id: executionId },
+  });
+
+  if (!execution) {
+    throw new Error(`GoalExecution ${executionId} not found`);
+  }
+
+  if (execution.outcomeStatus === "measured") {
+    console.info(`[Goals] Outcome already measured for ${executionId}`);
+    return execution;
+  }
+
+  await mcpManager.ensureInitialized(execution.shop);
+  const tools = await mcpManager.getToolsForAI();
+  const hasTools = Object.keys(tools).length > 0;
+
+  if (!hasTools) {
+    return prisma.goalExecution.update({
+      where: { id: executionId },
+      data: {
+        outcomeStatus: "inconclusive",
+        outcomeData: JSON.stringify({ error: "No tools available to measure" }),
+        outcomeMeasuredAt: new Date(),
+      },
+    });
+  }
+
+  try {
+    const baselineData = execution.baselineData
+      ? JSON.parse(execution.baselineData)
+      : null;
+
+    const response = await generateText({
+      model: openai("gpt-4o-mini"),
+      system: `You are a data analyst measuring the outcome of a previously executed action for a Shopify merchant.
+
+Compare current metrics to the baseline and return ONLY a JSON object:
+{
+  "currentRevenue7d": <number>,
+  "currentOrderCount7d": <number>,
+  "currentAov7d": <number>,
+  "revenueDelta": <number — difference from baseline>,
+  "revenueDeltaPercent": <number — percentage change>,
+  "orderCountDelta": <number>,
+  "aovDelta": <number>,
+  "aovDeltaPercent": <number>,
+  "measuredAt": "<ISO timestamp>",
+  "summary": "<1-2 sentence summary of the outcome>"
+}
+
+Use shopify_query to get orders from the last 7 days. Be accurate with the numbers.`,
+      prompt: `Measure the outcome of this action:
+- Action: ${execution.title}
+- Description: ${execution.description}
+- Executed at: ${execution.executedAt?.toISOString() ?? "unknown"}
+${baselineData ? `- Baseline data: ${JSON.stringify(baselineData)}` : "- No baseline data available"}
+
+Query current metrics and compare to the baseline.`,
+      tools: tools as Parameters<typeof generateText>[0]["tools"],
+      stopWhen: stepCountIs(3),
+      timeout: { totalMs: 30_000, stepMs: 10_000 },
+    });
+
+    const outcomeData = extractJSON(response.text);
+
+    return prisma.goalExecution.update({
+      where: { id: executionId },
+      data: {
+        outcomeStatus: "measured",
+        outcomeData: outcomeData ? JSON.stringify(outcomeData) : null,
+        outcomeMeasuredAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error(`[Goals] Error measuring outcome for ${executionId}:`, error);
+
+    return prisma.goalExecution.update({
+      where: { id: executionId },
+      data: {
+        outcomeStatus: "inconclusive",
+        outcomeData: JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+        outcomeMeasuredAt: new Date(),
+      },
+    });
+  }
 }

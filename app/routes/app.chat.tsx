@@ -12,9 +12,7 @@
  * useChat / DefaultChatTransport (they depend on browser-only APIs).
  */
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { useEffect, useRef, useState, useCallback } from "react";
 import type { LoaderFunctionArgs, HeadersFunction } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
@@ -72,10 +70,61 @@ function ChatBody() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [greeting] = useState(getGreeting);
 
-  const transport = useMemo(
-    () => new DefaultChatTransport({ api: "/api/chat" }),
-    [],
+  // Lazy-load browser-only AI SDK modules to avoid SSR issues
+  const [aiModules, setAiModules] = useState<{
+    useChat: typeof import("@ai-sdk/react").useChat;
+    DefaultChatTransport: typeof import("ai").DefaultChatTransport;
+  } | null>(null);
+
+  useEffect(() => {
+    void Promise.all([
+      import("@ai-sdk/react"),
+      import("ai"),
+    ]).then(([aiReact, ai]) => {
+      setAiModules({
+        useChat: aiReact.useChat,
+        DefaultChatTransport: ai.DefaultChatTransport,
+      });
+    });
+  }, []);
+
+  if (!aiModules) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "calc(100vh - 120px)",
+        }}
+      >
+        <s-spinner size="large" accessibilityLabel="Loading chat" />
+      </div>
+    );
+  }
+
+  return (
+    <ChatBodyInner
+      greeting={greeting}
+      messagesEndRef={messagesEndRef}
+      useChat={aiModules.useChat}
+      DefaultChatTransport={aiModules.DefaultChatTransport}
+    />
   );
+}
+
+function ChatBodyInner({
+  greeting,
+  messagesEndRef,
+  useChat,
+  DefaultChatTransport,
+}: {
+  readonly greeting: string;
+  readonly messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  readonly useChat: typeof import("@ai-sdk/react").useChat;
+  readonly DefaultChatTransport: typeof import("ai").DefaultChatTransport;
+}) {
+  const transport = useState(() => new DefaultChatTransport({ api: "/api/chat" }))[0];
 
   const [input, setInput] = useState("");
   const { messages, sendMessage, status } = useChat({ transport });

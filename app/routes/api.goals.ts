@@ -3,7 +3,7 @@
  *
  * Provides endpoints for managing goals and goal executions:
  * - GET: List goals, goal executions, or infer goal details
- * - POST: Create goals, execute, dismiss, generate analyses
+ * - POST: Create goals, execute, dismiss, generate analyses, measure outcomes
  * - PUT: Update goals
  * - DELETE: Delete goals
  */
@@ -22,8 +22,18 @@ import {
 import {
   enqueueGoalAnalysis,
   enqueueGoalExecution,
+  enqueueOutcomeMeasurement,
 } from "../jobs/scheduler.server";
 import prisma from "../db.server";
+
+function parseJsonField(value: unknown): unknown {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
 
 export function normalizeExecution(rec: Record<string, unknown>) {
   let status = rec.status as string;
@@ -32,12 +42,29 @@ export function normalizeExecution(rec: Record<string, unknown>) {
   if (status === "executing") status = "in_progress";
   if (status === "error") status = "failed";
 
+  // Parse linked goals from join table
+  const goalExecutionLinks = rec.goalExecutionLinks as
+    | Array<{ goal: { id: string; title: string; ruleKey: string; category: string } }>
+    | undefined;
+
+  const linkedGoals = goalExecutionLinks
+    ? goalExecutionLinks.map((link) => link.goal)
+    : [];
+
   return {
     ...rec,
     status,
     mcpServersUsed: typeof rec.mcpServersUsed === "string"
       ? (rec.mcpServersUsed as string).split(",").filter(Boolean)
       : rec.mcpServersUsed,
+    estimatedRevenue: parseJsonField(rec.estimatedRevenue),
+    estimatedConversionLift: parseJsonField(rec.estimatedConversionLift),
+    estimatedAovImpact: parseJsonField(rec.estimatedAovImpact),
+    actionSteps: parseJsonField(rec.actionSteps),
+    outcomeData: parseJsonField(rec.outcomeData),
+    baselineData: parseJsonField(rec.baselineData),
+    linkedGoals,
+    goalExecutionLinks: undefined,
   };
 }
 
@@ -58,6 +85,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // Default: return executions
   const status = url.searchParams.get("status") || undefined;
   const category = url.searchParams.get("category") || undefined;
+  const goalId = url.searchParams.get("goalId") || undefined;
+  const sortBy = (url.searchParams.get("sortBy") || undefined) as
+    | "impactScore" | "priority" | "newest" | undefined;
   const limit = parseInt(url.searchParams.get("limit") || "50", 10);
   const offset = parseInt(url.searchParams.get("offset") || "0", 10);
 
@@ -75,9 +105,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
     );
   }
 
-  const filters: { status?: string; category?: string } = {};
+  const filters: {
+    status?: string;
+    category?: string;
+    goalId?: string;
+    sortBy?: "impactScore" | "priority" | "newest";
+  } = {};
   if (status) filters.status = status;
   if (category) filters.category = category;
+  if (goalId) filters.goalId = goalId;
+  if (sortBy) filters.sortBy = sortBy;
 
   const { data: rawExecutions, total } = await getGoalExecutionsForShop(
     session.shop,
@@ -117,6 +154,7 @@ export async function action({ request }: ActionFunctionArgs) {
       analysisPrompt?: string;
       actionPrompt?: string;
       cronIntervalMins?: number;
+      outcomeMeasureDays?: number;
       requiredServers?: string[];
       enabled?: boolean;
     };
@@ -150,6 +188,7 @@ export async function action({ request }: ActionFunctionArgs) {
         description: body.description as string,
         priority: body.priority as string | undefined,
         cronIntervalMins: body.cronIntervalMins as number | undefined,
+        outcomeMeasureDays: body.outcomeMeasureDays as number | undefined,
         category: body.category as string | undefined,
         analysisPrompt: body.analysisPrompt as string | undefined,
         actionPrompt: body.actionPrompt as string | undefined,
@@ -284,6 +323,49 @@ export async function action({ request }: ActionFunctionArgs) {
       console.error("[API] Error dismissing goal execution:", error);
       return Response.json(
         { error: "Failed to dismiss", details: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
+  // Action: measure outcome
+  if (actionType === "measure_outcome") {
+    const executionId = body.executionId as string | undefined;
+    if (!executionId) {
+      return Response.json(
+        { error: "executionId is required for measure_outcome action" },
+        { status: 400 },
+      );
+    }
+
+    try {
+      const execution = await prisma.goalExecution.findUnique({
+        where: { id: executionId },
+      });
+
+      if (!execution) {
+        return Response.json({ error: "GoalExecution not found" }, { status: 404 });
+      }
+
+      if (execution.shop !== session.shop) {
+        return Response.json(
+          { error: "GoalExecution does not belong to this shop" },
+          { status: 403 },
+        );
+      }
+
+      const job = await enqueueOutcomeMeasurement(session.shop, executionId);
+
+      return Response.json({
+        success: true,
+        jobId: job.id,
+        status: "queued",
+        message: "Outcome measurement job enqueued",
+      });
+    } catch (error) {
+      console.error("[API] Error enqueuing outcome measurement:", error);
+      return Response.json(
+        { error: "Failed to enqueue outcome measurement", details: error instanceof Error ? error.message : String(error) },
         { status: 500 },
       );
     }

@@ -8,6 +8,7 @@
 import {
   analyzeGoals,
   executeGoalExecution,
+  measureOutcome,
 } from "../services/goals.server";
 
 interface GoalAnalysisPayload {
@@ -15,6 +16,11 @@ interface GoalAnalysisPayload {
 }
 
 interface GoalExecutePayload {
+  shop: string;
+  executionId: string;
+}
+
+interface GoalMeasureOutcomePayload {
   shop: string;
   executionId: string;
 }
@@ -41,6 +47,19 @@ export async function handleGoalExecution(
   return result;
 }
 
+export async function handleGoalMeasureOutcome(
+  payload: GoalMeasureOutcomePayload,
+) {
+  console.info(
+    `[JobHandler] Starting goal_measure_outcome for execution: ${payload.executionId}`,
+  );
+  const result = await measureOutcome(payload.executionId);
+  console.info(
+    `[JobHandler] Completed goal_measure_outcome for execution: ${payload.executionId}`,
+  );
+  return result;
+}
+
 export async function handleJob(jobType: string, payload: unknown) {
   switch (jobType) {
     case "goal_analysis":
@@ -48,6 +67,9 @@ export async function handleJob(jobType: string, payload: unknown) {
 
     case "goal_execute":
       return handleGoalExecution(payload as GoalExecutePayload);
+
+    case "goal_measure_outcome":
+      return handleGoalMeasureOutcome(payload as GoalMeasureOutcomePayload);
 
     default:
       throw new Error(`Unknown job type: ${jobType}`);
