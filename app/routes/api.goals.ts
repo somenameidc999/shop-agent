@@ -73,6 +73,28 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   const type = url.searchParams.get("type") || "executions";
 
+  if (type === "job") {
+    const jobId = url.searchParams.get("jobId");
+    if (!jobId) {
+      return Response.json({ error: "jobId is required" }, { status: 400 });
+    }
+    const job = await prisma.backgroundJob.findUnique({ where: { id: jobId } });
+    if (!job || job.shop !== session.shop) {
+      return Response.json({ error: "Job not found" }, { status: 404 });
+    }
+    return Response.json({
+      id: job.id,
+      status: job.status,
+      jobType: job.jobType,
+      error: job.error,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      createdAt: job.createdAt,
+    });
+  }
+
   if (type === "goals") {
     const goals = await getGoalsForShop(session.shop);
     const parsed = goals.map((g) => ({

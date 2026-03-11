@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "d47a29d5c529465d246cec59538c9c13"
-name = "sidekick-agent"
+name = "my-agent"
 application_url = "https://example.com"
 embedded = true
 

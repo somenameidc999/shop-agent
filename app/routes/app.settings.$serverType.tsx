@@ -132,7 +132,7 @@ export default function ServerTypeDetailPage() {
   const shopify = useAppBridge();
   const fetcher = useFetcher<typeof action>();
   const navigate = useNavigate();
-  const saving = fetcher.state === "submitting";
+  const saving = fetcher.state !== "idle";
 
   const def = SERVER_FIELD_DEFS[serverType as ServerType];
   const FormComponent = FORM_COMPONENTS[serverType];
@@ -249,6 +249,38 @@ export default function ServerTypeDetailPage() {
           </button>
         </div>
       </s-section>
+
+      {saving && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "12px 16px",
+            marginBottom: 12,
+            background: "#f0fdf4",
+            border: "1px solid #bbf7d0",
+            borderRadius: 8,
+            fontSize: 13,
+            color: "#15803d",
+            fontWeight: 500,
+          }}
+        >
+          <span
+            style={{
+              width: 16,
+              height: 16,
+              border: "2px solid #bbf7d0",
+              borderTop: "2px solid #15803d",
+              borderRadius: "50%",
+              animation: "spin 0.8s linear infinite",
+              flexShrink: 0,
+            }}
+          />
+          Saving configuration and reconnecting data sources...
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
 
       <s-section heading="Connections">
         {typedConfigs.map((config) => (

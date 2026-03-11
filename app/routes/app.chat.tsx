@@ -133,7 +133,7 @@ function ChatBodyInner({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, status]);
 
   const handleValueChange = useCallback((value: string) => {
     setInput(value);
@@ -244,24 +244,38 @@ function ChatBodyInner({
           <ChatMessage key={message.id} message={message} />
         ))}
 
-        {isLoading && messages.at(-1)?.role !== "assistant" && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 0",
-            }}
-          >
-            <s-avatar initials={AGENT_INITIAL} alt={AGENT_NAME} size="small" />
-            <s-box padding="base" borderRadius="base" background="subdued">
-              <s-stack direction="inline" gap="small" alignItems="center">
-                <s-spinner size="base" accessibilityLabel="Thinking" />
-                <s-text color="subdued">Thinking...</s-text>
-              </s-stack>
-            </s-box>
-          </div>
-        )}
+        {isLoading && (() => {
+          const lastMsg = messages.at(-1);
+          const assistantHasContent =
+            lastMsg?.role === "assistant" &&
+            lastMsg.parts.some(
+              (p) =>
+                (p.type === "text" && p.text.trim().length > 0) ||
+                p.type === "dynamic-tool",
+            );
+          if (assistantHasContent) return null;
+
+          return (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 0",
+              }}
+            >
+              <s-avatar initials={AGENT_INITIAL} alt={AGENT_NAME} size="small" />
+              <s-box padding="base" borderRadius="base" background="subdued">
+                <s-stack direction="inline" gap="small" alignItems="center">
+                  <s-spinner size="base" accessibilityLabel="Thinking" />
+                  <s-text color="subdued">
+                    {status === "submitted" ? "Thinking..." : "Working..."}
+                  </s-text>
+                </s-stack>
+              </s-box>
+            </div>
+          );
+        })()}
 
         <div ref={messagesEndRef} />
       </div>

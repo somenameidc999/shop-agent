@@ -24,7 +24,7 @@ const ANALYSIS_TIMEOUT_MS = 60_000;
 const ANALYSIS_STEP_TIMEOUT_MS = 15_000;
 const EXECUTION_TIMEOUT_MS = 60_000;
 const EXECUTION_STEP_TIMEOUT_MS = 20_000;
-const MAX_TOOL_STEPS = 5;
+const MAX_TOOL_STEPS = 10;
 const BATCH_CONCURRENCY = 3;
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1_000;
@@ -569,10 +569,24 @@ async function analyzeGoal(
         },
       });
 
-      const parsed = extractJSON(response.text);
+      // response.text may be empty if all steps were tool calls and
+      // stopWhen terminated before a final text response. Fall back to
+      // scanning step texts for the JSON verdict.
+      let rawText = response.text;
+      if (!rawText || rawText.trim().length === 0) {
+        for (let i = response.steps.length - 1; i >= 0; i--) {
+          const stepText = response.steps[i]?.text;
+          if (stepText && stepText.trim().length > 0) {
+            rawText = stepText;
+            break;
+          }
+        }
+      }
+
+      const parsed = extractJSON(rawText);
       if (!isVerdictResponse(parsed)) {
         throw new Error(
-          `Invalid verdict JSON — raw: ${response.text.slice(0, 200)}`,
+          `Invalid verdict JSON — raw: ${(rawText || "").slice(0, 200)}`,
         );
       }
 
@@ -589,13 +603,20 @@ async function analyzeGoal(
 
     const requiredServers = JSON.parse(goal.requiredServers) as string[];
 
+    const now = new Date();
     const existing = await prisma.goalExecution.findFirst({
       where: { shop, goalId: goal.id },
     });
 
-    if (existing && ["executed", "dismissed", "completed"].includes(existing.status)) {
+    // Only skip if the execution is still active (not expired) AND already acted upon
+    if (
+      existing &&
+      ["executed", "dismissed", "completed"].includes(existing.status) &&
+      existing.expiresAt &&
+      existing.expiresAt > now
+    ) {
       console.info(
-        `[Goals] Skipping goal "${goal.ruleKey}" — execution already ${existing.status}`,
+        `[Goals] Skipping goal "${goal.ruleKey}" — active execution already ${existing.status}`,
       );
       return { goalId: goal.id, ruleKey: goal.ruleKey, status: "not_applicable" as const };
     }

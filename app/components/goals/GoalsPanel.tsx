@@ -12,6 +12,15 @@ interface GoalSummary {
   category: string;
 }
 
+type GeneratingPhase = "queued" | "running" | "analyzing" | "done" | "error";
+
+interface GeneratingState {
+  phase: GeneratingPhase;
+  jobId: string | null;
+  startedAt: number;
+  error: string | null;
+}
+
 const CATEGORIES: { value: CategoryFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "catalog", label: "Catalog" },
@@ -50,14 +59,212 @@ function formatCurrency(value: number): string {
   }).format(value);
 }
 
+const JOB_POLL_INTERVAL_MS = 3_000;
+const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
+
+const PHASE_STEPS: { phase: GeneratingPhase; label: string; detail: string }[] = [
+  { phase: "queued", label: "Request queued", detail: "Preparing to analyze your store data..." },
+  { phase: "running", label: "Connecting to data sources", detail: "Gathering data from your connected services..." },
+  { phase: "analyzing", label: "Analyzing your store", detail: "AI is reviewing your data and generating insights..." },
+  { phase: "done", label: "Complete", detail: "Recommendations are ready!" },
+];
+
+function GeneratingView({ state }: { readonly state: GeneratingState }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - state.startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [state.startedAt]);
+
+  const formatElapsed = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
+  };
+
+  const currentPhaseIndex = PHASE_STEPS.findIndex((s) => s.phase === state.phase);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 32,
+        padding: "60px 40px",
+      }}
+    >
+      {/* Animated icon */}
+      <div
+        style={{
+          width: 80,
+          height: 80,
+          borderRadius: 20,
+          background: "linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <s-spinner size="large" accessibilityLabel="Generating recommendations" />
+      </div>
+
+      {/* Status text */}
+      <div style={{ textAlign: "center", maxWidth: 480 }}>
+        <div
+          style={{
+            fontSize: 20,
+            fontWeight: 600,
+            color: "var(--s-color-text, #1a1a1a)",
+            marginBottom: 8,
+          }}
+        >
+          {AGENT_NAME} is analyzing your store
+        </div>
+        <div
+          style={{
+            fontSize: 14,
+            color: "var(--s-color-text-secondary, #616161)",
+            lineHeight: 1.6,
+          }}
+        >
+          {PHASE_STEPS[currentPhaseIndex]?.detail || "Working on it..."}
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--s-color-text-secondary, #919191)",
+            marginTop: 8,
+          }}
+        >
+          Elapsed: {formatElapsed(elapsed)}
+        </div>
+      </div>
+
+      {/* Step progress */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 0,
+          width: "100%",
+          maxWidth: 360,
+        }}
+      >
+        {PHASE_STEPS.filter((s) => s.phase !== "done").map((step, i) => {
+          const isActive = i === currentPhaseIndex;
+          const isComplete = i < currentPhaseIndex;
+          const isPending = i > currentPhaseIndex;
+
+          return (
+            <div key={step.phase} style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  minWidth: 24,
+                }}
+              >
+                <div
+                  style={{
+                    width: 24,
+                    height: 24,
+                    borderRadius: "50%",
+                    border: isActive
+                      ? "2px solid #4F46E5"
+                      : isComplete
+                        ? "2px solid #16A34A"
+                        : "2px solid var(--s-color-border-secondary, #e3e3e3)",
+                    background: isComplete ? "#16A34A" : "var(--s-color-bg-surface, #fff)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transition: "all 0.3s ease",
+                    flexShrink: 0,
+                  }}
+                >
+                  {isComplete ? (
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M2 6L5 9L10 3" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : isActive ? (
+                    <div
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: "#4F46E5",
+                        animation: "pulse 1.5s ease-in-out infinite",
+                      }}
+                    />
+                  ) : null}
+                </div>
+                {i < 2 && (
+                  <div
+                    style={{
+                      width: 2,
+                      height: 28,
+                      background: isComplete
+                        ? "#16A34A"
+                        : "var(--s-color-border-secondary, #e3e3e3)",
+                      transition: "background 0.3s ease",
+                    }}
+                  />
+                )}
+              </div>
+
+              <div style={{ paddingTop: 2, paddingBottom: i < 2 ? 16 : 0 }}>
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: isActive ? 600 : 400,
+                    color: isPending
+                      ? "var(--s-color-text-secondary, #919191)"
+                      : "var(--s-color-text, #1a1a1a)",
+                    transition: "color 0.3s ease",
+                  }}
+                >
+                  {step.label}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(0.8); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 export function GoalsPanel() {
   const [executions, setExecutions] = useState<GoalExecution[]>([]);
   const [goals, setGoals] = useState<GoalSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [generating, setGenerating] = useState<GeneratingState | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>("all");
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("impactScore");
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const jobPollRef = useRef<NodeJS.Timeout | null>(null);
+
+  const stopJobPolling = useCallback(() => {
+    if (jobPollRef.current) {
+      clearInterval(jobPollRef.current);
+      jobPollRef.current = null;
+    }
+  }, []);
 
   const fetchExecutions = useCallback(async () => {
     try {
@@ -94,21 +301,104 @@ export function GoalsPanel() {
     }
   }, []);
 
+  const pollJobStatus = useCallback(
+    (jobId: string, startedAt: number) => {
+      stopJobPolling();
+
+      const poll = async () => {
+        if (Date.now() - startedAt > MAX_POLL_DURATION_MS) {
+          stopJobPolling();
+          setGenerating({
+            phase: "error",
+            jobId,
+            startedAt,
+            error: "Generation is taking longer than expected. Your recommendations may still appear shortly.",
+          });
+          return;
+        }
+
+        try {
+          const response = await fetch(`/api/goals?type=job&jobId=${jobId}`);
+          if (!response.ok) return;
+
+          const job = await response.json();
+
+          if (job.status === "completed") {
+            stopJobPolling();
+            setGenerating({ phase: "done", jobId, startedAt, error: null });
+            await fetchExecutions();
+            setTimeout(() => setGenerating(null), 1500);
+          } else if (job.status === "failed") {
+            stopJobPolling();
+            setGenerating({
+              phase: "error",
+              jobId,
+              startedAt,
+              error: job.error || "Generation failed. Please try again.",
+            });
+          } else if (job.status === "running") {
+            const elapsed = Date.now() - startedAt;
+            const phase = elapsed > 10_000 ? "analyzing" : "running";
+            setGenerating((prev) => prev ? { ...prev, phase } : null);
+          }
+        } catch (error) {
+          console.error("Failed to poll job status:", error);
+        }
+      };
+
+      void poll();
+      jobPollRef.current = setInterval(() => void poll(), JOB_POLL_INTERVAL_MS);
+    },
+    [fetchExecutions, stopJobPolling],
+  );
+
   const handleRefresh = useCallback(async () => {
-    setIsLoading(true);
+    const startedAt = Date.now();
+    setGenerating({ phase: "queued", jobId: null, startedAt, error: null });
+
     try {
-      await fetch("/api/goals", {
+      const response = await fetch("/api/goals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "generate" }),
       });
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      await fetchExecutions();
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        setGenerating({
+          phase: "error",
+          jobId: null,
+          startedAt,
+          error: (errorData as { error?: string }).error || "Failed to start generation.",
+        });
+        return;
+      }
+
+      const data = await response.json();
+      const jobId = (data as { jobId?: string }).jobId;
+
+      if (!jobId) {
+        setGenerating({
+          phase: "error",
+          jobId: null,
+          startedAt,
+          error: "No job ID returned. Please try again.",
+        });
+        return;
+      }
+
+      setGenerating({ phase: "queued", jobId, startedAt, error: null });
+      pollJobStatus(jobId, startedAt);
     } catch (error) {
-      console.error("Failed to generate goal executions:", error);
-      setIsLoading(false);
+      console.error("Failed to generate recommendations:", error);
+      setGenerating({
+        phase: "error",
+        jobId: null,
+        startedAt,
+        error: "Network error. Please check your connection and try again.",
+      });
     }
-  }, [fetchExecutions]);
+  }, [pollJobStatus]);
 
   const handleExecute = useCallback(
     async (execution: GoalExecution) => {
@@ -181,6 +471,10 @@ export function GoalsPanel() {
   }, [fetchExecutions, fetchGoals]);
 
   useEffect(() => {
+    return () => stopJobPolling();
+  }, [stopJobPolling]);
+
+  useEffect(() => {
     const hasInProgress = executions.some((e) => e.status === "in_progress");
 
     if (hasInProgress && !pollIntervalRef.current) {
@@ -236,6 +530,11 @@ export function GoalsPanel() {
     );
   }
 
+  // Show generating view when a job is in progress
+  if (generating && generating.phase !== "error") {
+    return <GeneratingView state={generating} />;
+  }
+
   if (executions.length === 0) {
     return (
       <div
@@ -248,6 +547,39 @@ export function GoalsPanel() {
           padding: 80,
         }}
       >
+        {generating?.phase === "error" && (
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 480,
+              padding: "14px 20px",
+              borderRadius: 12,
+              background: "#FEF2F2",
+              border: "1px solid #FECACA",
+              color: "#DC2626",
+              fontSize: 14,
+              lineHeight: 1.5,
+              marginBottom: 8,
+              textAlign: "center",
+            }}
+          >
+            {generating.error}
+            <button
+              type="button"
+              onClick={() => setGenerating(null)}
+              style={{
+                all: "unset",
+                cursor: "pointer",
+                marginLeft: 12,
+                fontWeight: 600,
+                textDecoration: "underline",
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         <div
           style={{
             width: 64,
@@ -281,7 +613,7 @@ export function GoalsPanel() {
             }}
           >
             {AGENT_NAME} analyzes your connected data sources based on your goals
-            and generates actionable recommendations. Click refresh to generate your first batch.
+            and generates actionable recommendations. Click below to generate your first batch.
           </div>
         </div>
         <button
@@ -311,6 +643,40 @@ export function GoalsPanel() {
 
   return (
     <div>
+      {generating?.phase === "error" && (
+        <div
+          style={{
+            padding: "14px 20px",
+            borderRadius: 12,
+            background: "#FEF2F2",
+            border: "1px solid #FECACA",
+            color: "#DC2626",
+            fontSize: 14,
+            lineHeight: 1.5,
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>{generating.error}</span>
+          <button
+            type="button"
+            onClick={() => setGenerating(null)}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              fontWeight: 600,
+              textDecoration: "underline",
+              flexShrink: 0,
+              marginLeft: 16,
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Stats bar */}
       <div
         style={{
@@ -466,7 +832,7 @@ export function GoalsPanel() {
           <button
             type="button"
             onClick={handleRefresh}
-            disabled={isLoading}
+            disabled={generating !== null && generating.phase !== "error"}
             style={{
               padding: "10px 20px",
               background: "transparent",
@@ -475,7 +841,7 @@ export function GoalsPanel() {
               borderRadius: 10,
               fontSize: 14,
               fontWeight: 600,
-              cursor: isLoading ? "not-allowed" : "pointer",
+              cursor: generating && generating.phase !== "error" ? "not-allowed" : "pointer",
               transition: "background 0.15s, border-color 0.15s",
               fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
               display: "flex",
@@ -483,13 +849,13 @@ export function GoalsPanel() {
               gap: 8,
             }}
             onMouseEnter={(e) => {
-              if (!isLoading) {
+              if (!generating || generating.phase === "error") {
                 e.currentTarget.style.background = "var(--s-color-bg-surface-hover, #f6f6f7)";
                 e.currentTarget.style.borderColor = "var(--s-color-border, #c9cccf)";
               }
             }}
             onMouseLeave={(e) => {
-              if (!isLoading) {
+              if (!generating || generating.phase === "error") {
                 e.currentTarget.style.background = "transparent";
                 e.currentTarget.style.borderColor = "var(--s-color-border-secondary, #e3e3e3)";
               }
@@ -670,7 +1036,6 @@ export function GoalsPanel() {
           ))}
         </div>
       )}
-
     </div>
   );
 }

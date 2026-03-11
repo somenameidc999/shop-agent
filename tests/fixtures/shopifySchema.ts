@@ -64,6 +64,116 @@ export const TEST_SCHEMA: CompactSchema = {
       args: [],
       returnType: "Shop!",
     },
+    // -- Singular lookups (require id) --
+    {
+      name: "product",
+      description: "Returns a product by ID.",
+      args: [{ name: "id", type: "ID!", description: "" }],
+      returnType: "Product",
+    },
+    {
+      name: "order",
+      description: "Returns an order by ID.",
+      args: [{ name: "id", type: "ID!", description: "" }],
+      returnType: "Order",
+    },
+    {
+      name: "customer",
+      description: "Returns a customer by ID.",
+      args: [{ name: "id", type: "ID!", description: "" }],
+      returnType: "Customer",
+    },
+    // -- Collection queries --
+    {
+      name: "collections",
+      description: "List of collections.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+        { name: "query", type: "String", description: "" },
+        { name: "sortKey", type: "CollectionSortKeys", description: "" },
+        { name: "reverse", type: "Boolean", description: "" },
+      ],
+      returnType: "CollectionConnection!",
+    },
+    {
+      name: "collection",
+      description: "Returns a collection by ID.",
+      args: [{ name: "id", type: "ID!", description: "" }],
+      returnType: "Collection",
+    },
+    {
+      name: "inventoryItems",
+      description: "List of inventory items.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+        { name: "query", type: "String", description: "" },
+      ],
+      returnType: "InventoryItemConnection!",
+    },
+    {
+      name: "fulfillmentOrders",
+      description: "List of fulfillment orders.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+        { name: "query", type: "String", description: "" },
+      ],
+      returnType: "FulfillmentOrderConnection!",
+    },
+    {
+      name: "discountNodes",
+      description: "List of discount nodes.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+        { name: "query", type: "String", description: "" },
+        { name: "sortKey", type: "DiscountSortKeys", description: "" },
+        { name: "reverse", type: "Boolean", description: "" },
+      ],
+      returnType: "DiscountNodeConnection!",
+    },
+    {
+      name: "discountNode",
+      description: "Returns a discount node by ID.",
+      args: [
+        { name: "id", type: "ID!", description: "" },
+      ],
+      returnType: "DiscountNode",
+    },
+    {
+      name: "automaticDiscountNodes",
+      description: "List of automatic discount nodes.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+        { name: "query", type: "String", description: "" },
+        { name: "reverse", type: "Boolean", description: "" },
+      ],
+      returnType: "DiscountAutomaticNodeConnection!",
+    },
+    {
+      name: "codeDiscountNodes",
+      description: "List of code discount nodes.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+        { name: "query", type: "String", description: "" },
+        { name: "reverse", type: "Boolean", description: "" },
+      ],
+      returnType: "DiscountCodeNodeConnection!",
+    },
+    {
+      name: "automaticDiscountSavedSearches",
+      description: "Saved searches for automatic discounts.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+      ],
+      returnType: "SavedSearchConnection!",
+    },
+    {
+      name: "codeDiscountSavedSearches",
+      description: "Saved searches for code discounts.",
+      args: [
+        { name: "first", type: "Int", description: "" },
+      ],
+      returnType: "SavedSearchConnection!",
+    },
   ],
   mutations: [
     {
@@ -76,6 +186,13 @@ export const TEST_SCHEMA: CompactSchema = {
     },
   ],
   types: [
+    // -- Additional sort key enums --
+    {
+      name: "CollectionSortKeys",
+      kind: "ENUM",
+      description: "",
+      enumValues: ["TITLE", "UPDATED_AT", "ID", "RELEVANCE"],
+    },
     // -- Sort key enums --
     {
       name: "ProductSortKeys",
@@ -208,6 +325,9 @@ export const TEST_SCHEMA: CompactSchema = {
         { name: "priceRangeV2", type: "ProductPriceRangeV2!", description: "" },
         { name: "totalVariants", type: "Int!", description: "" },
         { name: "tracksInventory", type: "Boolean!", description: "" },
+        { name: "collections", type: "CollectionConnection!", description: "" },
+        { name: "metafields", type: "MetafieldConnection!", description: "" },
+        { name: "options", type: "[ProductOption!]!", description: "" },
       ],
     },
     {
@@ -437,6 +557,253 @@ export const TEST_SCHEMA: CompactSchema = {
       fields: [
         { name: "field", type: "[String!]", description: "" },
         { name: "message", type: "String!", description: "" },
+      ],
+    },
+    // -- Discount types --
+    {
+      name: "DiscountSortKeys",
+      kind: "ENUM",
+      description: "",
+      enumValues: ["CREATED_AT", "UPDATED_AT", "ID", "RELEVANCE"],
+    },
+    {
+      name: "DiscountNodeConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[DiscountNodeEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountNodeEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "DiscountNode!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountNode",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "discount", type: "Discount!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountAutomaticNodeConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[DiscountAutomaticNodeEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountAutomaticNodeEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "DiscountAutomaticNode!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountAutomaticNode",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "automaticDiscount", type: "DiscountAutomatic!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountCodeNodeConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[DiscountCodeNodeEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountCodeNodeEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "DiscountCodeNode!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "DiscountCodeNode",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "codeDiscount", type: "DiscountCode!", description: "" },
+      ],
+    },
+    {
+      name: "SavedSearchConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[SavedSearchEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "SavedSearchEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "SavedSearch!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "SavedSearch",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "name", type: "String!", description: "" },
+      ],
+    },
+    // -- Collection types --
+    {
+      name: "CollectionConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[CollectionEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "CollectionEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "Collection!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "Collection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "title", type: "String!", description: "" },
+        { name: "descriptionHtml", type: "HTML!", description: "" },
+        { name: "handle", type: "String!", description: "" },
+        { name: "productsCount", type: "Int!", description: "" },
+        { name: "sortOrder", type: "CollectionSortOrder!", description: "" },
+      ],
+    },
+    // -- Metafield types --
+    {
+      name: "MetafieldConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[MetafieldEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "MetafieldEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "Metafield!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "Metafield",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "key", type: "String!", description: "" },
+        { name: "value", type: "String!", description: "" },
+        { name: "namespace", type: "String!", description: "" },
+        { name: "type", type: "String!", description: "" },
+      ],
+    },
+    // -- ProductOption --
+    {
+      name: "ProductOption",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "name", type: "String!", description: "" },
+        { name: "values", type: "[String!]!", description: "" },
+      ],
+    },
+    // -- Inventory types --
+    {
+      name: "InventoryItemConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[InventoryItemEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "InventoryItemEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "InventoryItem!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "InventoryItem",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "sku", type: "String", description: "" },
+        { name: "tracked", type: "Boolean!", description: "" },
+      ],
+    },
+    // -- Fulfillment order types --
+    {
+      name: "FulfillmentOrderConnection",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "edges", type: "[FulfillmentOrderEdge!]!", description: "" },
+        { name: "pageInfo", type: "PageInfo!", description: "" },
+      ],
+    },
+    {
+      name: "FulfillmentOrderEdge",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "node", type: "FulfillmentOrder!", description: "" },
+        { name: "cursor", type: "String!", description: "" },
+      ],
+    },
+    {
+      name: "FulfillmentOrder",
+      kind: "OBJECT",
+      description: "",
+      fields: [
+        { name: "id", type: "ID!", description: "" },
+        { name: "status", type: "String!", description: "" },
+        { name: "createdAt", type: "DateTime!", description: "" },
       ],
     },
     {
