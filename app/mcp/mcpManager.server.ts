@@ -17,6 +17,37 @@ import {
   cleanupGoogleCredsFiles,
 } from "./config.server";
 
+const MAX_TOOL_NAME_LENGTH = 64;
+
+/**
+ * Builds a namespaced tool name that fits within the provider's max length.
+ * Truncates the server-name prefix (not the tool name) to preserve uniqueness,
+ * since tool names within a single server are already unique.
+ */
+function truncateToolName(serverName: string, toolName: string): string {
+  const separator = "__";
+  const full = `${serverName}${separator}${toolName}`;
+
+  if (full.length <= MAX_TOOL_NAME_LENGTH) return full;
+
+  const toolPart = `${separator}${toolName}`;
+  const maxPrefixLen = MAX_TOOL_NAME_LENGTH - toolPart.length;
+
+  if (maxPrefixLen >= 1) {
+    const truncated = serverName.slice(0, maxPrefixLen) + toolPart;
+    console.warn(
+      `[McpManager] Tool name "${full}" (${full.length} chars) exceeds ${MAX_TOOL_NAME_LENGTH}-char limit → "${truncated}"`,
+    );
+    return truncated;
+  }
+
+  const fallback = toolName.slice(0, MAX_TOOL_NAME_LENGTH);
+  console.warn(
+    `[McpManager] Tool name "${full}" (${full.length} chars) exceeds ${MAX_TOOL_NAME_LENGTH}-char limit → "${fallback}"`,
+  );
+  return fallback;
+}
+
 interface ConnectedServer {
   readonly name: string;
   readonly client: Client;
@@ -144,7 +175,7 @@ class McpManager {
 
     for (const [serverName, server] of this.servers) {
       for (const mcpTool of server.tools) {
-        const namespacedName = `${serverName}__${mcpTool.name}`;
+        const namespacedName = truncateToolName(serverName, mcpTool.name);
 
         result[namespacedName] = aiTool({
           description: `[${serverName}] ${mcpTool.description}`,

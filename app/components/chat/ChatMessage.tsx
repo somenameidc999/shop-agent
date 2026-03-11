@@ -73,11 +73,12 @@ function ToolCallIndicator({ toolName, state }: ToolCallIndicatorProps) {
     ? toolName.split("__", 2)
     : ["agent", toolName];
 
-  const isRunning = state === "call" || state === "partial-call";
-  const isDone = state === "result";
+  const isRunning = state === "input-streaming" || state === "input-available";
+  const isDone = state === "output-available";
+  const isError = state === "output-error";
 
-  const tone = isDone ? "success" : isRunning ? "info" : "neutral";
-  const icon = isDone ? "check-circle" : isRunning ? "in-progress" : "wrench";
+  const tone = isError ? "critical" : isDone ? "success" : isRunning ? "info" : "neutral";
+  const icon = isError ? "x-circle" : isDone ? "check-circle" : isRunning ? "in-progress" : "wrench";
 
   return (
     <s-badge tone={tone} icon={icon}>

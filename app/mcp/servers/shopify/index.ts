@@ -24,6 +24,7 @@ import { runInSandbox } from "./sandbox.js";
 import {
   type CompactSchema,
   buildQuery,
+  getSearchStems,
   transformSchema,
   unwrapTypeName,
   validateFieldsAgainstSchema,
@@ -215,16 +216,19 @@ server.registerTool(
     try {
       console.error(`[shopify] find — searching for "${searchTerm}"`);
       const schema = await getSchema();
-      const term = searchTerm.toLowerCase();
+      const stems = getSearchStems(searchTerm);
+
+      const matchesAny = (name: string) =>
+        stems.some((s) => name.toLowerCase().includes(s));
 
       const queries = schema.queries
-        .filter((q) => q.name.toLowerCase().includes(term))
+        .filter((q) => matchesAny(q.name))
         .map((q) => ({ name: q.name, description: q.description }));
       const mutations = schema.mutations
-        .filter((m) => m.name.toLowerCase().includes(term))
+        .filter((m) => matchesAny(m.name))
         .map((m) => ({ name: m.name, description: m.description }));
       const types = schema.types
-        .filter((t) => t.name.toLowerCase().includes(term))
+        .filter((t) => matchesAny(t.name))
         .map((t) => ({ name: t.name, kind: t.kind, description: t.description }));
 
       const result = { apiVersion: schema.apiVersion, queries, mutations, types };
@@ -347,6 +351,15 @@ server.registerTool(
       "automatically, handling Relay connection patterns (edges/node).\n\n" +
       "This is the PREFERRED tool for reading Shopify data. Use shopify_graphql " +
       "only for mutations or complex queries this tool cannot express.\n\n" +
+      "IMPORTANT: The resource name must EXACTLY match a Shopify Admin API root " +
+      "query name. Common query names (use these exact strings):\n" +
+      "  products, orders, customers, collections, draftOrders,\n" +
+      "  inventoryItems, discountNodes, codeDiscountNodes, automaticDiscountNodes,\n" +
+      "  locations, fulfillmentOrders, returnableFulfillments,\n" +
+      "  publications, segments, shopifyPaymentsAccount\n\n" +
+      "Do NOT use singular forms like 'product' or 'order' — those are single-item " +
+      "lookups that require an ID. Use the plural collection query names above.\n" +
+      "If unsure of the exact name, use shopify_find first.\n\n" +
       "Examples:\n" +
       '  resource: "products", fields: ["id", "title", "status", "totalInventory"], limit: 5\n' +
       '  resource: "orders", fields: ["id", "name", "totalPriceSet.shopMoney.amount"], filter: "fulfillment_status:shipped"\n' +
@@ -357,8 +370,9 @@ server.registerTool(
       resource: z
         .string()
         .describe(
-          "The root query name (e.g. 'products', 'orders', 'customers', 'draftOrders', 'collections'). " +
-          "Use shopify_find to discover available queries.",
+          "The EXACT root query name — must match a Shopify Admin API query. " +
+          "Use plural collection names: 'products' (NOT 'product'), 'orders' (NOT 'order'), " +
+          "'customers', 'draftOrders', 'collections'. Use shopify_find if unsure.",
         ),
       fields: z
         .array(z.string())

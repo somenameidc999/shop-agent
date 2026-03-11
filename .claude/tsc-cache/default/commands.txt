@@ -1,1 +1,0 @@
-prisma:build:cd /Users/nathanhdavis/projects/demos/sidekick-agent/prisma && npx prisma generate

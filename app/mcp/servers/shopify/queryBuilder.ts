@@ -70,6 +70,43 @@ export function unwrapTypeName(typeStr: string): string {
   return typeStr.replace(/[!\[\]]/g, "").trim();
 }
 
+/**
+ * Generates candidate search stems for a resource/search term.
+ * Handles basic pluralization so "discounts" also matches "discount",
+ * and the original term is always included.
+ */
+export function getSearchStems(term: string): string[] {
+  const lower = term.toLowerCase();
+  const stems = [lower];
+  if (lower.endsWith("s") && lower.length > 2) {
+    stems.push(lower.slice(0, -1));
+  } else if (!lower.endsWith("s")) {
+    stems.push(lower + "s");
+  }
+  return stems;
+}
+
+/**
+ * Finds queries whose names contain any of the provided stems.
+ */
+function findMatchingQueries(
+  queries: CompactOperation[],
+  stems: string[],
+  limit = 10,
+): CompactOperation[] {
+  const seen = new Set<string>();
+  const results: CompactOperation[] = [];
+  for (const stem of stems) {
+    for (const q of queries) {
+      if (!seen.has(q.name) && q.name.toLowerCase().includes(stem)) {
+        seen.add(q.name);
+        results.push(q);
+      }
+    }
+  }
+  return results.slice(0, limit);
+}
+
 function buildTypeMap(schema: CompactSchema): Map<string, CompactType> {
   return new Map(schema.types.map((t) => [t.name, t]));
 }
@@ -163,6 +200,41 @@ function validateSortKey(
 }
 
 // ---------------------------------------------------------------------------
+// Auto-selection builder — recursively expands object types to find scalars
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a GraphQL selection set for a type by recursively expanding object
+ * sub-fields until scalars are found. Handles types like MoneyBag whose
+ * immediate children (shopMoney, presentmentMoney) are themselves objects.
+ */
+function buildAutoSelection(
+  typeName: string,
+  typeMap: Map<string, CompactType>,
+  maxDepth: number,
+): string | null {
+  if (maxDepth <= 0) return null;
+  const typeDef = typeMap.get(typeName);
+  if (!typeDef?.fields) return null;
+
+  const parts: string[] = [];
+  for (const f of typeDef.fields.slice(0, 5)) {
+    const bt = unwrapTypeName(f.type);
+    const resolved = typeMap.get(bt);
+    if (!resolved?.fields) {
+      parts.push(f.name);
+    } else if (!bt.endsWith("Connection")) {
+      const inner = buildAutoSelection(bt, typeMap, maxDepth - 1);
+      if (inner) {
+        parts.push(`${f.name} ${inner}`);
+      }
+    }
+  }
+
+  return parts.length > 0 ? `{ ${parts.join(" ")} }` : null;
+}
+
+// ---------------------------------------------------------------------------
 // buildQuery — the main function
 // ---------------------------------------------------------------------------
 
@@ -175,16 +247,18 @@ export function buildQuery(
   const errors: string[] = [];
   const warnings: string[] = [];
 
+  // Exact match only — no stemming / fuzzy matching. The resource name must
+  // match a root query name exactly. This prevents "products" from accidentally
+  // matching the singular "product" query (which requires an id argument).
   const queryOp = schema.queries.find(
     (q) => q.name.toLowerCase() === resource.toLowerCase(),
   );
   if (!queryOp) {
-    const suggestions = schema.queries
-      .filter((q) => q.name.toLowerCase().includes(resource.toLowerCase()))
-      .slice(0, 10)
+    const stems = getSearchStems(resource);
+    const suggestions = findMatchingQueries(schema.queries, stems)
       .map((q) => q.name);
     errors.push(
-      `Query "${resource}" not found.` +
+      `Query "${resource}" not found. You must use the exact query name.` +
         (suggestions.length > 0 ? ` Did you mean: ${suggestions.join(", ")}?` : ""),
     );
     return { query: "", errors, warnings };
@@ -218,12 +292,22 @@ export function buildQuery(
     return { query: "", errors, warnings };
   }
 
-  const validFields: string[] = [];
-  const nestedSelections: string[] = [];
-
+  // Group fields by top-level name so dot-notation paths that share a
+  // prefix (e.g. variants.title + variants.price) produce ONE selection.
+  const fieldGroups = new Map<string, string[][]>();
   for (const reqField of fields) {
     const parts = reqField.split(".");
     const topLevel = parts[0]!;
+    if (!fieldGroups.has(topLevel)) {
+      fieldGroups.set(topLevel, []);
+    }
+    fieldGroups.get(topLevel)!.push(parts.slice(1));
+  }
+
+  const validFields: string[] = [];
+  const nestedSelections: string[] = [];
+
+  for (const [topLevel, subPaths] of fieldGroups) {
     const match = targetType.fields.find((f) => f.name === topLevel);
 
     if (!match) {
@@ -237,10 +321,15 @@ export function buildQuery(
 
     const fieldBaseType = unwrapTypeName(match.type);
     const fieldTypeDef = typeMap.get(fieldBaseType);
+    const hasDotPaths = subPaths.some((p) => p.length > 0);
 
-    if (parts.length > 1 && fieldTypeDef?.fields) {
-      const subFields = parts.slice(1);
-      const subSelection = buildNestedSelection(fieldBaseType, subFields, typeMap, warnings);
+    if (hasDotPaths && fieldTypeDef?.fields) {
+      const subSelection = buildMergedSelection(
+        fieldBaseType,
+        subPaths.filter((p) => p.length > 0),
+        typeMap,
+        warnings,
+      );
       if (subSelection) {
         nestedSelections.push(`${topLevel} ${subSelection}`);
       }
@@ -258,14 +347,14 @@ export function buildQuery(
         }
       }
     } else if (fieldTypeDef?.fields) {
-      const scalarFields = fieldTypeDef.fields
-        .filter((f) => {
-          const bt = unwrapTypeName(f.type);
-          return !typeMap.get(bt)?.fields;
-        })
-        .slice(0, 5)
-        .map((f) => f.name);
-      nestedSelections.push(`${topLevel} { ${scalarFields.join(" ")} }`);
+      const selection = buildAutoSelection(fieldBaseType, typeMap, 3);
+      if (selection) {
+        nestedSelections.push(`${topLevel} ${selection}`);
+      } else {
+        warnings.push(
+          `Field "${topLevel}" is an object type (${fieldBaseType}) with no resolvable scalar fields.`,
+        );
+      }
     } else {
       validFields.push(topLevel);
     }
@@ -334,12 +423,18 @@ export function buildQuery(
 }
 
 // ---------------------------------------------------------------------------
-// Nested selection builder
+// Merged selection builder — groups sub-paths and auto-expands object leaves
 // ---------------------------------------------------------------------------
 
-function buildNestedSelection(
+/**
+ * Builds a single GraphQL selection set from multiple dot-notation sub-paths.
+ * Merges paths that share a prefix (e.g. variants.title + variants.price →
+ * one selection with both fields) and auto-expands object-typed leaves so
+ * they never produce empty braces.
+ */
+function buildMergedSelection(
   typeName: string,
-  subFields: string[],
+  subPaths: string[][],
   typeMap: Map<string, CompactType>,
   warnings: string[],
 ): string | null {
@@ -353,28 +448,68 @@ function buildNestedSelection(
       const nodeField = edgeType?.fields?.find((f) => f.name === "node");
       if (nodeField) {
         const nodeType = unwrapTypeName(nodeField.type);
-        const inner = buildNestedSelection(nodeType, subFields, typeMap, warnings);
+        const inner = buildMergedSelection(nodeType, subPaths, typeMap, warnings);
         return inner ? `(first: 10) { edges { node ${inner} } }` : null;
       }
     }
     return null;
   }
 
-  const validSubs: string[] = [];
-  for (const sf of subFields) {
-    const match = typeDef.fields.find((f) => f.name === sf);
+  const groups = new Map<string, string[][]>();
+  for (const path of subPaths) {
+    if (path.length === 0) continue;
+    const fieldName = path[0]!;
+    if (!groups.has(fieldName)) {
+      groups.set(fieldName, []);
+    }
+    groups.get(fieldName)!.push(path.slice(1));
+  }
+
+  const parts: string[] = [];
+  for (const [fieldName, childPaths] of groups) {
+    const match = typeDef.fields.find((f) => f.name === fieldName);
     if (!match) {
       const available = formatAvailableFields(typeName, typeMap);
       warnings.push(
-        `Field "${sf}" does not exist on type "${typeName}".\n\n` +
+        `Field "${fieldName}" does not exist on type "${typeName}".\n\n` +
           `Available fields on ${typeName}:\n${available}`,
       );
+      continue;
+    }
+
+    const fieldBaseType = unwrapTypeName(match.type);
+    const fieldTypeDef = typeMap.get(fieldBaseType);
+    const hasDeeper = childPaths.some((p) => p.length > 0);
+
+    if (hasDeeper && fieldTypeDef?.fields) {
+      const inner = buildMergedSelection(fieldBaseType, childPaths.filter((p) => p.length > 0), typeMap, warnings);
+      if (inner) {
+        parts.push(`${fieldName} ${inner}`);
+      }
+    } else if (fieldTypeDef?.fields && fieldBaseType.endsWith("Connection")) {
+      const connEdges = fieldTypeDef.fields.find((f) => f.name === "edges");
+      if (connEdges) {
+        const connEdgeType = typeMap.get(unwrapTypeName(connEdges.type));
+        const connNode = connEdgeType?.fields?.find((f) => f.name === "node");
+        if (connNode) {
+          const connNodeType = typeMap.get(unwrapTypeName(connNode.type));
+          if (connNodeType?.fields) {
+            const idField = connNodeType.fields.find((f) => f.name === "id") ? "id" : "";
+            parts.push(`${fieldName}(first: 10) { edges { node { ${idField} } } }`);
+          }
+        }
+      }
+    } else if (fieldTypeDef?.fields) {
+      const inner = buildAutoSelection(fieldBaseType, typeMap, 3);
+      if (inner) {
+        parts.push(`${fieldName} ${inner}`);
+      }
     } else {
-      validSubs.push(sf);
+      parts.push(fieldName);
     }
   }
 
-  return validSubs.length > 0 ? `{ ${validSubs.join(" ")} }` : null;
+  return parts.length > 0 ? `{ ${parts.join(" ")} }` : null;
 }
 
 // ---------------------------------------------------------------------------

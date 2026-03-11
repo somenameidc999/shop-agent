@@ -8,6 +8,15 @@ interface RecommendationsPanelProps {
 
 type CategoryFilter = "all" | Recommendation["category"];
 
+type GeneratingPhase = "queued" | "running" | "analyzing" | "done" | "error";
+
+interface GeneratingState {
+  phase: GeneratingPhase;
+  jobId: string | null;
+  startedAt: number;
+  error: string | null;
+}
+
 const CATEGORIES: { value: CategoryFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "inventory", label: "Inventory" },
@@ -17,20 +26,235 @@ const CATEGORIES: { value: CategoryFilter; label: string }[] = [
   { value: "marketing", label: "Marketing" },
 ];
 
+const JOB_POLL_INTERVAL_MS = 3_000;
+const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
+
+const PHASE_STEPS: { phase: GeneratingPhase; label: string; detail: string }[] = [
+  { phase: "queued", label: "Request queued", detail: "Preparing to analyze your store data..." },
+  { phase: "running", label: "Connecting to data sources", detail: "Gathering data from your connected services..." },
+  { phase: "analyzing", label: "Analyzing your store", detail: "AI is reviewing your data and generating insights..." },
+  { phase: "done", label: "Complete", detail: "Recommendations are ready!" },
+];
+
+function GeneratingView({ state }: { readonly state: GeneratingState }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - state.startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [state.startedAt]);
+
+  const formatElapsed = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
+  };
+
+  const currentPhaseIndex = PHASE_STEPS.findIndex((s) => s.phase === state.phase);
+  const isError = state.phase === "error";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 32,
+        padding: "60px 40px",
+      }}
+    >
+      {/* Animated icon area */}
+      <div
+        style={{
+          width: 80,
+          height: 80,
+          borderRadius: 20,
+          background: isError
+            ? "#FEF2F2"
+            : "linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          position: "relative",
+        }}
+      >
+        {isError ? (
+          <s-icon type="alert-circle" />
+        ) : (
+          <s-spinner size="large" accessibilityLabel="Generating recommendations" />
+        )}
+      </div>
+
+      {/* Status text */}
+      <div style={{ textAlign: "center", maxWidth: 480 }}>
+        <div
+          style={{
+            fontSize: 20,
+            fontWeight: 600,
+            color: isError ? "#DC2626" : "var(--s-color-text, #1a1a1a)",
+            marginBottom: 8,
+          }}
+        >
+          {isError ? "Something went wrong" : `${AGENT_NAME} is analyzing your store`}
+        </div>
+        <div
+          style={{
+            fontSize: 14,
+            color: "var(--s-color-text-secondary, #616161)",
+            lineHeight: 1.6,
+          }}
+        >
+          {isError
+            ? state.error || "An error occurred while generating recommendations. Please try again."
+            : PHASE_STEPS[currentPhaseIndex]?.detail || "Working on it..."}
+        </div>
+        {!isError && (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--s-color-text-secondary, #919191)",
+              marginTop: 8,
+            }}
+          >
+            Elapsed: {formatElapsed(elapsed)}
+          </div>
+        )}
+      </div>
+
+      {/* Step progress */}
+      {!isError && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 0,
+            width: "100%",
+            maxWidth: 360,
+          }}
+        >
+          {PHASE_STEPS.filter((s) => s.phase !== "done").map((step, i) => {
+            const isActive = i === currentPhaseIndex;
+            const isComplete = i < currentPhaseIndex;
+            const isPending = i > currentPhaseIndex;
+
+            return (
+              <div key={step.phase} style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                {/* Connector line + circle */}
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    minWidth: 24,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: "50%",
+                      border: isActive
+                        ? "2px solid #4F46E5"
+                        : isComplete
+                          ? "2px solid #16A34A"
+                          : "2px solid var(--s-color-border-secondary, #e3e3e3)",
+                      background: isComplete ? "#16A34A" : "var(--s-color-bg-surface, #fff)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      transition: "all 0.3s ease",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {isComplete ? (
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 6L5 9L10 3" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : isActive ? (
+                      <div
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          background: "#4F46E5",
+                          animation: "pulse 1.5s ease-in-out infinite",
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                  {i < PHASE_STEPS.length - 2 && (
+                    <div
+                      style={{
+                        width: 2,
+                        height: 28,
+                        background: isComplete
+                          ? "#16A34A"
+                          : "var(--s-color-border-secondary, #e3e3e3)",
+                        transition: "background 0.3s ease",
+                      }}
+                    />
+                  )}
+                </div>
+
+                {/* Label */}
+                <div style={{ paddingTop: 2, paddingBottom: i < PHASE_STEPS.length - 2 ? 16 : 0 }}>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      fontWeight: isActive ? 600 : 400,
+                      color: isPending
+                        ? "var(--s-color-text-secondary, #919191)"
+                        : "var(--s-color-text, #1a1a1a)",
+                      transition: "color 0.3s ease",
+                    }}
+                  >
+                    {step.label}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Pulse animation keyframes */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(0.8); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 export function RecommendationsPanel({
   onChatHandoff,
 }: RecommendationsPanelProps) {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [generating, setGenerating] = useState<GeneratingState | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>("all");
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const jobPollRef = useRef<NodeJS.Timeout | null>(null);
+
+  const stopJobPolling = useCallback(() => {
+    if (jobPollRef.current) {
+      clearInterval(jobPollRef.current);
+      jobPollRef.current = null;
+    }
+  }, []);
 
   const fetchRecommendations = useCallback(async () => {
     try {
-      const response = await fetch("/api/recommendations");
+      const response = await fetch("/api/goals");
       if (response.ok) {
         const data = await response.json();
-        setRecommendations(data.recommendations || []);
+        setRecommendations(data.executions || []);
       }
     } catch (error) {
       console.error("Failed to fetch recommendations:", error);
@@ -39,21 +263,109 @@ export function RecommendationsPanel({
     }
   }, []);
 
+  const pollJobStatus = useCallback(
+    (jobId: string, startedAt: number) => {
+      stopJobPolling();
+
+      const poll = async () => {
+        // Check for timeout
+        if (Date.now() - startedAt > MAX_POLL_DURATION_MS) {
+          stopJobPolling();
+          setGenerating({
+            phase: "error",
+            jobId,
+            startedAt,
+            error: "Generation is taking longer than expected. Your recommendations may still appear shortly.",
+          });
+          return;
+        }
+
+        try {
+          const response = await fetch(`/api/goals?type=job&jobId=${jobId}`);
+          if (!response.ok) return;
+
+          const job = await response.json();
+
+          if (job.status === "completed") {
+            stopJobPolling();
+            setGenerating({ phase: "done", jobId, startedAt, error: null });
+            await fetchRecommendations();
+            // Brief pause so user sees "done" state
+            setTimeout(() => setGenerating(null), 1500);
+          } else if (job.status === "failed") {
+            stopJobPolling();
+            setGenerating({
+              phase: "error",
+              jobId,
+              startedAt,
+              error: job.error || "Generation failed. Please try again.",
+            });
+          } else if (job.status === "running") {
+            const elapsed = Date.now() - startedAt;
+            // After 10s of running, show "analyzing" phase
+            const phase = elapsed > 10_000 ? "analyzing" : "running";
+            setGenerating((prev) => prev ? { ...prev, phase } : null);
+          }
+          // "pending" → stay in "queued" phase
+        } catch (error) {
+          console.error("Failed to poll job status:", error);
+        }
+      };
+
+      // Poll immediately then on interval
+      void poll();
+      jobPollRef.current = setInterval(() => void poll(), JOB_POLL_INTERVAL_MS);
+    },
+    [fetchRecommendations, stopJobPolling],
+  );
+
   const handleRefresh = useCallback(async () => {
-    setIsLoading(true);
+    const startedAt = Date.now();
+    setGenerating({ phase: "queued", jobId: null, startedAt, error: null });
+
     try {
-      await fetch("/api/recommendations", {
+      const response = await fetch("/api/goals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "generate" }),
       });
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      await fetchRecommendations();
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        setGenerating({
+          phase: "error",
+          jobId: null,
+          startedAt,
+          error: (errorData as { error?: string }).error || "Failed to start generation.",
+        });
+        return;
+      }
+
+      const data = await response.json();
+      const jobId = (data as { jobId?: string }).jobId;
+
+      if (!jobId) {
+        setGenerating({
+          phase: "error",
+          jobId: null,
+          startedAt,
+          error: "No job ID returned. Please try again.",
+        });
+        return;
+      }
+
+      setGenerating({ phase: "queued", jobId, startedAt, error: null });
+      pollJobStatus(jobId, startedAt);
     } catch (error) {
       console.error("Failed to generate recommendations:", error);
-      setIsLoading(false);
+      setGenerating({
+        phase: "error",
+        jobId: null,
+        startedAt,
+        error: "Network error. Please check your connection and try again.",
+      });
     }
-  }, [fetchRecommendations]);
+  }, [pollJobStatus]);
 
   const handleExecute = useCallback(
     async (recommendation: Recommendation) => {
@@ -64,10 +376,10 @@ export function RecommendationsPanel({
           )
         );
 
-        const response = await fetch("/api/recommendations", {
+        const response = await fetch("/api/goals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "execute", recommendationId: recommendation.id }),
+          body: JSON.stringify({ action: "execute", executionId: recommendation.id }),
         });
 
         if (response.ok) {
@@ -105,10 +417,10 @@ export function RecommendationsPanel({
 
   const handleDismiss = useCallback(async (id: string) => {
     try {
-      const response = await fetch("/api/recommendations", {
+      const response = await fetch("/api/goals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "dismiss", recommendationId: id }),
+        body: JSON.stringify({ action: "dismiss", executionId: id }),
       });
 
       if (response.ok) {
@@ -122,6 +434,11 @@ export function RecommendationsPanel({
   useEffect(() => {
     void fetchRecommendations();
   }, [fetchRecommendations]);
+
+  // Cleanup job polling on unmount
+  useEffect(() => {
+    return () => stopJobPolling();
+  }, [stopJobPolling]);
 
   useEffect(() => {
     const hasInProgress = recommendations.some((r) => r.status === "in_progress");
@@ -166,6 +483,11 @@ export function RecommendationsPanel({
     );
   }
 
+  // Show generating view when a generation job is in progress
+  if (generating && generating.phase !== "error") {
+    return <GeneratingView state={generating} />;
+  }
+
   if (recommendations.length === 0) {
     return (
       <div
@@ -178,6 +500,40 @@ export function RecommendationsPanel({
           padding: 80,
         }}
       >
+        {/* Error banner if generation failed */}
+        {generating?.phase === "error" && (
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 480,
+              padding: "14px 20px",
+              borderRadius: 12,
+              background: "#FEF2F2",
+              border: "1px solid #FECACA",
+              color: "#DC2626",
+              fontSize: 14,
+              lineHeight: 1.5,
+              marginBottom: 8,
+              textAlign: "center",
+            }}
+          >
+            {generating.error}
+            <button
+              type="button"
+              onClick={() => setGenerating(null)}
+              style={{
+                all: "unset",
+                cursor: "pointer",
+                marginLeft: 12,
+                fontWeight: 600,
+                textDecoration: "underline",
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         <div
           style={{
             width: 64,
@@ -211,7 +567,7 @@ export function RecommendationsPanel({
             }}
           >
             {AGENT_NAME} analyzes your connected data sources and generates
-            actionable recommendations. Click refresh to generate your first batch.
+            actionable recommendations. Click below to generate your first batch.
           </div>
         </div>
         <button
@@ -246,6 +602,41 @@ export function RecommendationsPanel({
 
   return (
     <div>
+      {/* Error banner if generation failed while recommendations exist */}
+      {generating?.phase === "error" && (
+        <div
+          style={{
+            padding: "14px 20px",
+            borderRadius: 12,
+            background: "#FEF2F2",
+            border: "1px solid #FECACA",
+            color: "#DC2626",
+            fontSize: 14,
+            lineHeight: 1.5,
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>{generating.error}</span>
+          <button
+            type="button"
+            onClick={() => setGenerating(null)}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              fontWeight: 600,
+              textDecoration: "underline",
+              flexShrink: 0,
+              marginLeft: 16,
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Stats bar */}
       <div
         style={{
@@ -338,7 +729,7 @@ export function RecommendationsPanel({
         <button
           type="button"
           onClick={handleRefresh}
-          disabled={isLoading}
+          disabled={generating !== null && generating.phase !== "error"}
           style={{
             padding: "10px 20px",
             background: "transparent",
@@ -347,7 +738,7 @@ export function RecommendationsPanel({
             borderRadius: 10,
             fontSize: 14,
             fontWeight: 600,
-            cursor: isLoading ? "not-allowed" : "pointer",
+            cursor: generating && generating.phase !== "error" ? "not-allowed" : "pointer",
             transition: "background 0.15s, border-color 0.15s",
             fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
             display: "flex",
@@ -355,14 +746,14 @@ export function RecommendationsPanel({
             gap: 8,
           }}
           onMouseEnter={(e) => {
-            if (!isLoading) {
+            if (!generating || generating.phase === "error") {
               e.currentTarget.style.background =
                 "var(--s-color-bg-surface-hover, #f6f6f7)";
               e.currentTarget.style.borderColor = "var(--s-color-border, #c9cccf)";
             }
           }}
           onMouseLeave={(e) => {
-            if (!isLoading) {
+            if (!generating || generating.phase === "error") {
               e.currentTarget.style.background = "transparent";
               e.currentTarget.style.borderColor =
                 "var(--s-color-border-secondary, #e3e3e3)";
