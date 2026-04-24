@@ -1,116 +1,110 @@
-/**
- * Jobs API Route
- *
- * Provides job status polling endpoint for background jobs.
- * GET handler with ?jobId=xxx query param
- * Returns job status: { status, result, error }
- */
-
-import type { LoaderFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
-/**
- * GET handler: Get job status by jobId
- * Query params: jobId (required)
- * Returns: { status: "pending" | "running" | "completed" | "failed", result?: string, error?: string }
- */
+function formatJob(job: {
+  id: string;
+  jobType: string;
+  status: string;
+  payload: string | null;
+  result: string | null;
+  error: string | null;
+  attempts: number;
+  maxAttempts: number;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  createdAt: Date;
+  shop: string;
+}) {
+  return {
+    id: job.id,
+    jobType: job.jobType,
+    status: job.status,
+    error: job.error ?? undefined,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    startedAt: job.startedAt?.toISOString(),
+    completedAt: job.completedAt?.toISOString(),
+    createdAt: job.createdAt.toISOString(),
+  };
+}
+
 export async function loader({ request }: LoaderFunctionArgs) {
   const { session } = await authenticate.admin(request);
   const url = new URL(request.url);
-
   const jobId = url.searchParams.get("jobId");
 
-  if (!jobId) {
-    return Response.json(
-      { error: "jobId query parameter is required" },
-      { status: 400 },
-    );
-  }
-
   try {
-    // Fetch the job
-    const job = await prisma.backgroundJob.findUnique({
-      where: { id: jobId },
-    });
-
-    if (!job) {
-      return Response.json({ error: "Job not found" }, { status: 404 });
+    if (jobId) {
+      const job = await prisma.backgroundJob.findUnique({ where: { id: jobId } });
+      if (!job || job.shop !== session.shop) {
+        return Response.json({ error: "Job not found" }, { status: 404 });
+      }
+      return Response.json(formatJob(job));
     }
 
-    // Verify the job belongs to this shop
-    if (job.shop !== session.shop) {
-      return Response.json(
-        { error: "Job does not belong to this shop" },
-        { status: 403 },
-      );
-    }
-
-    // Map database status to API status
-    // Database statuses: "pending", "running", "completed", "failed"
-    let status: "pending" | "running" | "completed" | "failed";
-
-    if (job.status === "pending") {
-      status = "pending";
-    } else if (job.status === "running") {
-      status = "running";
-    } else if (job.status === "completed") {
-      status = "completed";
-    } else if (job.status === "failed") {
-      status = "failed";
-    } else {
-      // Handle any unexpected status values
-      status = job.status as "pending" | "running" | "completed" | "failed";
-    }
-
-    // Build response
-    const response: {
-      status: "pending" | "running" | "completed" | "failed";
-      jobId: string;
-      jobType: string;
-      result?: string;
-      error?: string;
-      attempts?: number;
-      maxAttempts?: number;
-      startedAt?: string;
-      completedAt?: string;
-    } = {
-      status,
-      jobId: job.id,
-      jobType: job.jobType,
-    };
-
-    // Include result if completed
-    if (job.result) {
-      response.result = job.result;
-    }
-
-    // Include error if failed
-    if (job.error) {
-      response.error = job.error;
-    }
-
-    // Include attempt information
-    response.attempts = job.attempts;
-    response.maxAttempts = job.maxAttempts;
-
-    // Include timestamps
-    if (job.startedAt) {
-      response.startedAt = job.startedAt.toISOString();
-    }
-    if (job.completedAt) {
-      response.completedAt = job.completedAt.toISOString();
-    }
-
-    return Response.json(response);
+    const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10), 1), 100);
+    const offset = Math.max(parseInt(url.searchParams.get("offset") || "0", 10), 0);
+    const [jobs, total] = await Promise.all([
+      prisma.backgroundJob.findMany({
+        where: { shop: session.shop },
+        orderBy: { createdAt: "desc" },
+        skip: offset,
+        take: limit,
+      }),
+      prisma.backgroundJob.count({ where: { shop: session.shop } }),
+    ]);
+    return Response.json({ jobs: jobs.map(formatJob), total, limit, offset });
   } catch (error) {
-    console.error("[API] Error fetching job status:", error);
     return Response.json(
-      {
-        error: "Failed to fetch job status",
-        details: error instanceof Error ? error.message : String(error),
-      },
+      { error: "Failed to fetch jobs", details: error instanceof Error ? error.message : String(error) },
       { status: 500 },
     );
   }
+}
+
+export async function action({ request }: ActionFunctionArgs) {
+  const { session } = await authenticate.admin(request);
+
+  let body: { action?: unknown; jobId?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (body.action !== "retry") {
+    return Response.json({ error: "Unsupported action" }, { status: 400 });
+  }
+
+  const jobId = typeof body.jobId === "string" ? body.jobId : null;
+  if (!jobId) {
+    return Response.json({ error: "jobId is required" }, { status: 400 });
+  }
+
+  const job = await prisma.backgroundJob.findUnique({ where: { id: jobId } });
+  if (!job || job.shop !== session.shop) {
+    return Response.json({ error: "Job not found" }, { status: 404 });
+  }
+
+  if (job.status !== "failed") {
+    return Response.json(
+      { error: `Only failed jobs can be retried (current status: ${job.status})` },
+      { status: 409 },
+    );
+  }
+
+  const updated = await prisma.backgroundJob.update({
+    where: { id: jobId },
+    data: {
+      status: "pending",
+      attempts: 0,
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      scheduledAt: new Date(),
+    },
+  });
+
+  return Response.json(formatJob(updated));
 }
