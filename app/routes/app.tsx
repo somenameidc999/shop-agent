@@ -10,6 +10,7 @@ import { initWorker } from "../jobs/worker.server";
 import { initScheduler } from "../jobs/scheduler.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  console.log("app.tsx loader");
   const { session, admin } = await authenticate.admin(request);
 
   // Persist shop info. Only calls the Shopify API when there is no saved
@@ -42,7 +43,8 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app">Recommendations</s-link>
         <s-link href="/app/goals">Goals</s-link>
-        <s-link href="/app/chat">Chat</s-link>
+        <s-link href="/app/jobs">Jobs</s-link>
+        {/* <s-link href="/app/chat">Chat</s-link> */}
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
       <Outlet />
@@ -51,19 +53,23 @@ export default function App() {
 }
 
 // Shopify needs React Router to catch some thrown responses, so that their headers are included in the response.
-// boundary.error() only handles Shopify ErrorResponse types and re-throws everything else,
-// so we catch non-Response errors here to prevent cascading crashes.
+// We can't delegate to boundary.error() because its constructor.name check fails
+// when React Router's ErrorResponseImpl class is minified in production builds,
+// causing it to re-throw auth-reauth responses and crash the page.
 export function ErrorBoundary() {
   const error = useRouteError();
 
-  // Let Shopify's boundary handle its own error responses (auth redirects, etc.)
-  if (
-    isRouteErrorResponse(error) ||
-    (error && typeof error === "object" && "constructor" in error &&
-      (error.constructor.name === "ErrorResponse" ||
-        error.constructor.name === "ErrorResponseImpl"))
-  ) {
-    return boundary.error(error);
+  // Render Shopify's reauth markup directly for RouteErrorResponses (e.g. 410 session expired).
+  // App Bridge picks up the embedded HTML and handles the reauth flow.
+  if (isRouteErrorResponse(error)) {
+    return (
+      <div
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{
+          __html: (typeof error.data === "string" && error.data) || "Handling response",
+        }}
+      />
+    );
   }
 
   // For all other errors, render a user-friendly fallback instead of re-throwing

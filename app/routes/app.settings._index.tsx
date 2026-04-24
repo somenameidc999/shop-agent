@@ -49,9 +49,11 @@ export default function SettingsOverview() {
   return (
     <s-page heading="Data Source Settings">
       <s-section>
+        {/* <s-banner tone="warning">Configure credentials for each data source your agent can
+        connect to</s-banner> */}
         <s-text>
           Configure credentials for each data source your agent can
-          connect to. All credentials are encrypted at rest.
+          connect to
         </s-text>
       </s-section>
 
