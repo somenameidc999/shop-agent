@@ -1,23 +1,37 @@
 /**
- * Recommendations Page (Landing Page)
+ * Landing Page — task list showing what needs attention.
  *
- * The default page when the app opens. Shows AI-generated recommendations
- * (goal executions) as actionable cards with next-steps and execute buttons.
- * Includes a summary dashboard row with revenue opportunity and outcome data.
+ * Initial data is loaded server-side via the route loader. "Generate" is
+ * wired to the App Bridge TitleBar primary action; the generate job is
+ * polled with a fetcher and the loader is revalidated when the job
+ * finishes.
  */
 
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router";
-import { AGENT_NAME } from "../config/agent";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { LoaderFunctionArgs, HeadersFunction } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
+import { getGoalExecutionsForShop } from "../services/goals.server";
+import { normalizeExecution } from "./api.goals";
+import type { GoalExecution } from "../components/goals/GoalExecutionCard";
+import { TaskList, type GeneratingState } from "../components/goals/TaskList";
 
-import { GoalsPanel } from "../components/goals/GoalsPanel";
+const JOB_POLL_INTERVAL_MS = 3_000;
+const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return null;
+  const { session } = await authenticate.admin(request);
+  const { data } = await getGoalExecutionsForShop(
+    session.shop,
+    { sortBy: "impactScore" },
+    { limit: 50, offset: 0 },
+  );
+  const executions = data.map((e) =>
+    normalizeExecution(e as unknown as Record<string, unknown>),
+  ) as unknown as GoalExecution[];
+  return { executions };
 };
 
 function getGreeting(): string {
@@ -27,231 +41,149 @@ function getGreeting(): string {
   return "Good evening";
 }
 
-interface DashboardStats {
-  totalRevenueOpportunity: number;
-  highConfidenceCount: number;
-  measuredOutcomeRevenue: number;
-  executedCount: number;
-}
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
-function DashboardSummary() {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-
-  useEffect(() => {
-    async function fetchStats() {
-      try {
-        const response = await fetch("/api/goals?limit=100");
-        if (!response.ok) return;
-        const data = await response.json();
-        const executions = data.executions || [];
-
-        const totalRevenueOpportunity = executions
-          .filter((e: Record<string, unknown>) =>
-            e.status === "pending" && e.estimatedRevenue
-          )
-          .reduce((sum: number, e: Record<string, unknown>) => {
-            const rev = e.estimatedRevenue as { min: number; max: number };
-            return sum + (rev.min + rev.max) / 2;
-          }, 0);
-
-        const highConfidenceCount = executions.filter(
-          (e: Record<string, unknown>) =>
-            e.status === "pending" && e.confidenceLevel === "high"
-        ).length;
-
-        const measuredOutcomeRevenue = executions
-          .filter(
-            (e: Record<string, unknown>) =>
-              e.outcomeStatus === "measured" && e.outcomeData
-          )
-          .reduce((sum: number, e: Record<string, unknown>) => {
-            const outcome = e.outcomeData as { revenueDelta?: number };
-            return sum + (outcome.revenueDelta ?? 0);
-          }, 0);
-
-        const executedCount = executions.filter(
-          (e: Record<string, unknown>) => e.status === "completed"
-        ).length;
-
-        setStats({
-          totalRevenueOpportunity,
-          highConfidenceCount,
-          measuredOutcomeRevenue,
-          executedCount,
-        });
-      } catch {
-        // Silently fail — dashboard is supplementary
-      }
-    }
-    void fetchStats();
-  }, []);
-
-  if (!stats) return null;
-
-  const hasOpportunity = stats.totalRevenueOpportunity > 0;
-  const hasOutcomes = stats.measuredOutcomeRevenue !== 0;
-  const hasHighConf = stats.highConfidenceCount > 0;
-
-  if (!hasOpportunity && !hasOutcomes && !hasHighConf) return null;
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 20,
-        marginBottom: 28,
-        flexWrap: "wrap",
-      }}
-    >
-      {hasOpportunity && (
-        <div
-          style={{
-            flex: 1,
-            minWidth: 200,
-            padding: "20px 24px",
-            background: "linear-gradient(135deg, #F0FDF4, #DCFCE7)",
-            borderRadius: 14,
-            border: "1px solid #BBF7D0",
-          }}
-        >
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#15803D", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            Revenue Opportunity
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#15803D", lineHeight: 1 }}>
-            {formatCurrency(stats.totalRevenueOpportunity)}
-          </div>
-          <div style={{ fontSize: 12, color: "#16A34A", marginTop: 4 }}>
-            From {stats.highConfidenceCount > 0 ? `${stats.highConfidenceCount} high-confidence` : "pending"} recommendations
-          </div>
-        </div>
-      )}
-
-      {hasOutcomes && (
-        <div
-          style={{
-            flex: 1,
-            minWidth: 200,
-            padding: "20px 24px",
-            background: stats.measuredOutcomeRevenue >= 0
-              ? "linear-gradient(135deg, #EFF6FF, #DBEAFE)"
-              : "linear-gradient(135deg, #FEF2F2, #FECACA)",
-            borderRadius: 14,
-            border: `1px solid ${stats.measuredOutcomeRevenue >= 0 ? "#BFDBFE" : "#FCA5A5"}`,
-          }}
-        >
-          <div style={{
-            fontSize: 12,
-            fontWeight: 600,
-            color: stats.measuredOutcomeRevenue >= 0 ? "#1D4ED8" : "#DC2626",
-            marginBottom: 6,
-            textTransform: "uppercase",
-            letterSpacing: "0.5px",
-          }}>
-            Measured Impact
-          </div>
-          <div style={{
-            fontSize: 28,
-            fontWeight: 700,
-            color: stats.measuredOutcomeRevenue >= 0 ? "#1D4ED8" : "#DC2626",
-            lineHeight: 1,
-          }}>
-            {stats.measuredOutcomeRevenue >= 0 ? "+" : ""}
-            {formatCurrency(stats.measuredOutcomeRevenue)}
-          </div>
-          <div style={{
-            fontSize: 12,
-            color: stats.measuredOutcomeRevenue >= 0 ? "#2563EB" : "#EF4444",
-            marginTop: 4,
-          }}>
-            From {stats.executedCount} executed recommendation{stats.executedCount !== 1 ? "s" : ""}
-          </div>
-        </div>
-      )}
-
-      {hasHighConf && !hasOpportunity && (
-        <div
-          style={{
-            flex: 1,
-            minWidth: 200,
-            padding: "20px 24px",
-            background: "linear-gradient(135deg, #F0FDF4, #DCFCE7)",
-            borderRadius: 14,
-            border: "1px solid #BBF7D0",
-          }}
-        >
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#15803D", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            High Confidence
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#15803D", lineHeight: 1 }}>
-            {stats.highConfidenceCount}
-          </div>
-          <div style={{ fontSize: 12, color: "#16A34A", marginTop: 4 }}>
-            recommendation{stats.highConfidenceCount !== 1 ? "s" : ""} ready to execute
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+type GenerateResponse = { jobId?: string; error?: string };
+type JobStatusResponse = { status: string; error: string | null };
 
 export default function RecommendationsPage() {
-  const navigate = useNavigate();
+  const { executions } = useLoaderData<typeof loader>();
   const [greeting] = useState(getGreeting);
-  const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
-    setMounted(true);
+  const generateFetcher = useFetcher<GenerateResponse>();
+  const jobFetcher = useFetcher<JobStatusResponse>();
+  const revalidator = useRevalidator();
+
+  const [generating, setGenerating] = useState<GeneratingState | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
   }, []);
 
-  if (!mounted) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "calc(100vh - 120px)",
-        }}
-      >
-        <s-spinner size="large" accessibilityLabel="Loading" />
-      </div>
+  const handleGenerate = useCallback(() => {
+    const startedAt = Date.now();
+    setGenerating({ phase: "queued", jobId: null, startedAt, error: null });
+    generateFetcher.submit(
+      { action: "generate" },
+      {
+        method: "POST",
+        action: "/api/goals",
+        encType: "application/json",
+      },
     );
-  }
+  }, [generateFetcher]);
+
+  const dismissError = useCallback(() => {
+    setGenerating(null);
+  }, []);
+
+  // Capture jobId once the generate POST resolves.
+  useEffect(() => {
+    if (generateFetcher.state !== "idle" || !generateFetcher.data) return;
+    const { jobId, error } = generateFetcher.data;
+    setGenerating((prev) => {
+      if (!prev || prev.jobId) return prev;
+      if (error || !jobId) {
+        return {
+          ...prev,
+          phase: "error",
+          error: error ?? "Failed to start generation.",
+        };
+      }
+      return { ...prev, jobId };
+    });
+  }, [generateFetcher.state, generateFetcher.data]);
+
+  // Poll job status while a jobId is active.
+  useEffect(() => {
+    if (!generating?.jobId) return;
+    if (generating.phase === "done" || generating.phase === "error") return;
+
+    const jobId = generating.jobId;
+    const startedAt = generating.startedAt;
+
+    const tick = () => {
+      if (Date.now() - startedAt > MAX_POLL_DURATION_MS) {
+        stopPolling();
+        setGenerating((prev) =>
+          prev
+            ? {
+                ...prev,
+                phase: "error",
+                error:
+                  "Generation is taking longer than expected. Your recommendations may still appear shortly.",
+              }
+            : prev,
+        );
+        return;
+      }
+      jobFetcher.load(`/api/goals?type=job&jobId=${jobId}`);
+    };
+
+    tick();
+    pollRef.current = setInterval(tick, JOB_POLL_INTERVAL_MS);
+    return stopPolling;
+  }, [generating?.jobId, generating?.startedAt, generating?.phase, jobFetcher, stopPolling]);
+
+  // React to job status updates.
+  useEffect(() => {
+    if (!jobFetcher.data) return;
+    const { status, error } = jobFetcher.data;
+
+    if (status === "completed") {
+      stopPolling();
+      setGenerating((prev) => (prev ? { ...prev, phase: "done" } : prev));
+      void revalidator.revalidate();
+      const t = setTimeout(() => setGenerating(null), 1500);
+      return () => clearTimeout(t);
+    }
+    if (status === "failed") {
+      stopPolling();
+      setGenerating((prev) =>
+        prev
+          ? { ...prev, phase: "error", error: error ?? "Generation failed. Please try again." }
+          : prev,
+      );
+      return;
+    }
+    if (status === "running") {
+      setGenerating((prev) => {
+        if (!prev) return prev;
+        const elapsed = Date.now() - prev.startedAt;
+        const phase = elapsed > 10_000 ? "analyzing" : "running";
+        return { ...prev, phase };
+      });
+    }
+  }, [jobFetcher.data, revalidator, stopPolling]);
+
+  useEffect(() => stopPolling, [stopPolling]);
+
+  const isGenerating =
+    generating !== null && generating.phase !== "error" && generating.phase !== "done";
+
+  // `variant` is a TitleBar-specific attribute on its button child; it isn't in
+  // the standard HTMLButtonElement types, so we spread it via a cast.
+  const titleBarPrimaryProps = {
+    variant: "primary",
+  } as unknown as React.ButtonHTMLAttributes<HTMLButtonElement>;
 
   return (
-    <div style={{ padding: "24px 32px", maxWidth: 1200, margin: "0 auto" }}>
-      {/* Page header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 32,
-          flexWrap: "wrap",
-          gap: 16,
-        }}
-      >
-        <div>
-          <h1
-            style={{
-              fontSize: 24,
-              fontWeight: 600,
-              color: "var(--s-color-text, #1a1a1a)",
-              margin: "0 0 4px 0",
-              fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-            }}
-          >
-            {greeting}
-          </h1>
+    <>
+      <TitleBar title={greeting}>
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={isGenerating}
+          {...titleBarPrimaryProps}
+        >
+          {isGenerating ? "Generating..." : "Generate recommendations"}
+        </button>
+      </TitleBar>
+
+      <div style={{ padding: "24px 32px", maxWidth: 800, margin: "0 auto" }}>
+        {/* <div style={{ marginBottom: 28 }}>
           <p
             style={{
               fontSize: 14,
@@ -259,47 +191,18 @@ export default function RecommendationsPage() {
               margin: 0,
             }}
           >
-            Here are {AGENT_NAME}'s recommendations based on your goals and store data.
+            Here's what needs your attention.
           </p>
-        </div>
+        </div> */}
 
-        <button
-          type="button"
-          onClick={() => void navigate("/app/chat")}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "10px 20px",
-            background: "var(--s-color-bg-fill-emphasis, #303030)",
-            color: "#fff",
-            border: "none",
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: "pointer",
-            transition: "background 0.15s",
-            fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-            textDecoration: "none",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "#1a1a1a";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background =
-              "var(--s-color-bg-fill-emphasis, #303030)";
-          }}
-        >
-          <s-icon type="chat" />
-          Chat with {AGENT_NAME}
-        </button>
+        <TaskList
+          executions={executions}
+          generating={generating}
+          onGenerate={handleGenerate}
+          onDismissGenerateError={dismissError}
+        />
       </div>
-
-      {/* Dashboard summary */}
-      <DashboardSummary />
-
-      <GoalsPanel />
-    </div>
+    </>
   );
 }
 

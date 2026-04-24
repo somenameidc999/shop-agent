@@ -441,13 +441,15 @@ export function RecommendationsPanel({
   }, [stopJobPolling]);
 
   useEffect(() => {
-    const hasInProgress = recommendations.some((r) => r.status === "in_progress");
+    const hasActive = recommendations.some(
+      (r) => r.status === "in_progress" || r.queued,
+    );
 
-    if (hasInProgress && !pollIntervalRef.current) {
+    if (hasActive && !pollIntervalRef.current) {
       pollIntervalRef.current = setInterval(() => {
         void fetchRecommendations();
       }, 3000);
-    } else if (!hasInProgress && pollIntervalRef.current) {
+    } else if (!hasActive && pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
     }

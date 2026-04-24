@@ -15,6 +15,7 @@ import { generateText, stepCountIs } from "ai";
 import { openai } from "@ai-sdk/openai";
 import prisma from "../db.server";
 import { mcpManager } from "../mcp/mcpManager.server";
+import { enqueueDelayedOutcomeMeasurement } from "../jobs/scheduler.server";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -384,6 +385,27 @@ const PRIORITY_ORDER: Record<string, number> = {
   medium: 2,
   low: 3,
 };
+
+export async function getGoalExecutionById(id: string, shop: string) {
+  const execution = await prisma.goalExecution.findUnique({
+    where: { id },
+    include: {
+      goalExecutionLinks: {
+        include: {
+          goal: {
+            select: { id: true, title: true, ruleKey: true, category: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!execution || execution.shop !== shop) {
+    return null;
+  }
+
+  return execution;
+}
 
 export async function getGoalExecutionsForShop(
   shop: string,
@@ -824,6 +846,15 @@ Please execute this action and provide a summary of the results.`,
 
     console.info(`[Goals] Successfully executed goal execution ${id}`);
 
+    // Auto-schedule outcome measurement
+    const outcomeDays = execution.goal.outcomeMeasureDays ?? 7;
+    try {
+      await enqueueDelayedOutcomeMeasurement(execution.shop, id, outcomeDays);
+      console.info(`[Goals] Scheduled outcome measurement for execution ${id} in ${outcomeDays} days`);
+    } catch (err) {
+      console.warn(`[Goals] Failed to schedule outcome measurement for ${id}:`, err);
+    }
+
     return updated;
   } catch (error) {
     console.error(`[Goals] Error executing goal execution ${id}:`, error);
@@ -847,9 +878,279 @@ export async function dismissGoalExecution(id: string) {
     where: { id },
     data: {
       status: "dismissed",
+      dismissedAt: new Date(),
+      dismissedBy: "manual",
       updatedAt: new Date(),
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Batch Operations
+// ---------------------------------------------------------------------------
+
+export async function batchExecuteGoalExecutions(
+  shop: string,
+  executionIds: string[],
+) {
+  const { enqueueGoalExecution } = await import("../jobs/scheduler.server");
+
+  const executions = await prisma.goalExecution.findMany({
+    where: { id: { in: executionIds }, shop },
+  });
+
+  const results: Array<{ executionId: string; jobId: string; status: string }> = [];
+
+  for (const execution of executions) {
+    if (execution.status !== "new") continue;
+    const job = await enqueueGoalExecution(shop, execution.id);
+    results.push({ executionId: execution.id, jobId: job.id, status: "queued" });
+  }
+
+  console.info(`[Goals] Batch execute: ${results.length}/${executionIds.length} queued for shop ${shop}`);
+  return results;
+}
+
+export async function batchDismissGoalExecutions(
+  shop: string,
+  executionIds: string[],
+) {
+  const now = new Date();
+  const result = await prisma.goalExecution.updateMany({
+    where: { id: { in: executionIds }, shop, status: "new" },
+    data: {
+      status: "dismissed",
+      dismissedAt: now,
+      dismissedBy: "batch",
+    },
+  });
+
+  console.info(`[Goals] Batch dismiss: ${result.count}/${executionIds.length} dismissed for shop ${shop}`);
+  return result.count;
+}
+
+export async function undismissGoalExecution(id: string, shop: string) {
+  const execution = await prisma.goalExecution.findUnique({ where: { id } });
+  if (!execution || execution.shop !== shop) {
+    throw new Error("GoalExecution not found");
+  }
+  if (execution.status !== "dismissed") {
+    throw new Error("GoalExecution is not dismissed");
+  }
+  // Only allow undismiss within 30 minutes
+  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+  if (execution.dismissedAt && execution.dismissedAt < thirtyMinutesAgo) {
+    throw new Error("Cannot undo dismiss after 30 minutes");
+  }
+
+  return prisma.goalExecution.update({
+    where: { id },
+    data: {
+      status: "new",
+      dismissedAt: null,
+      dismissedBy: null,
+    },
+  });
+}
+
+export async function getRecentlyDismissedExecutions(shop: string, since: Date) {
+  const executions = await prisma.goalExecution.findMany({
+    where: {
+      shop,
+      status: "dismissed",
+      dismissedAt: { gte: since },
+    },
+    include: {
+      goalExecutionLinks: {
+        include: {
+          goal: { select: { id: true, title: true, ruleKey: true, category: true } },
+        },
+      },
+    },
+    orderBy: { dismissedAt: "desc" },
+  });
+  return executions;
+}
+
+// ---------------------------------------------------------------------------
+// Dry Run (Preview)
+// ---------------------------------------------------------------------------
+
+export async function dryRunGoalExecution(id: string) {
+  const execution = await prisma.goalExecution.findUnique({
+    where: { id },
+    include: { goal: true },
+  });
+
+  if (!execution) {
+    throw new Error(`GoalExecution ${id} not found`);
+  }
+
+  await mcpManager.ensureInitialized(execution.shop);
+  const allTools = await mcpManager.getToolsForAI();
+
+  // Filter to read-only tools (exclude mutations)
+  const readOnlyTools: Record<string, unknown> = {};
+  for (const [name, tool] of Object.entries(allTools)) {
+    // Allow query/find/get tools, exclude execute/mutate/update/delete
+    const lowerName = name.toLowerCase();
+    if (
+      !lowerName.includes("execute") &&
+      !lowerName.includes("mutate") &&
+      !lowerName.includes("update") &&
+      !lowerName.includes("delete") &&
+      !lowerName.includes("create") &&
+      !lowerName.includes("graphql")
+    ) {
+      readOnlyTools[name] = tool;
+    }
+  }
+
+  const hasTools = Object.keys(readOnlyTools).length > 0;
+
+  const response = await generateText({
+    model: openai("gpt-4o-mini"),
+    system: `You are previewing what an action WOULD do for a Shopify merchant. DO NOT execute any mutations.
+Only describe what you WOULD do based on the current data. Be specific about what changes would be made.
+
+SHOPIFY TOOL GUIDANCE:
+- Use shopify_query to read data (read-only).
+- Date filters MUST use ISO 8601.
+- NEVER guess field names.
+
+Respond with a clear, structured preview:
+1. What data you examined
+2. What changes would be made (specific items, amounts, etc.)
+3. Expected impact
+
+Keep it concise and actionable.`,
+    prompt: `Preview this action (DO NOT execute, only describe):
+${execution.actionPrompt}
+
+Context:
+- Goal: ${execution.title}
+- Description: ${execution.description}
+${execution.metadata ? `- Metadata: ${execution.metadata}` : ""}`,
+    ...(hasTools
+      ? {
+          tools: readOnlyTools as Parameters<typeof generateText>[0]["tools"],
+          stopWhen: stepCountIs(5),
+        }
+      : {}),
+    timeout: { totalMs: 30_000, stepMs: 10_000 },
+  });
+
+  // Cache the dry run result
+  await prisma.goalExecution.update({
+    where: { id },
+    data: { dryRunResult: response.text },
+  });
+
+  return { preview: response.text };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard Stats
+// ---------------------------------------------------------------------------
+
+export async function getDashboardStats(shop: string) {
+  const executions = await prisma.goalExecution.findMany({
+    where: { shop },
+    select: {
+      status: true,
+      impactScore: true,
+      confidenceLevel: true,
+      estimatedRevenue: true,
+      outcomeStatus: true,
+      outcomeData: true,
+      createdAt: true,
+      executedAt: true,
+      goalId: true,
+    },
+  });
+
+  // Revenue opportunity (pending executions)
+  const pendingExecs = executions.filter((e) => e.status === "new");
+  const revenueOpportunity = pendingExecs.reduce((sum, e) => {
+    if (!e.estimatedRevenue) return sum;
+    try {
+      const rev = JSON.parse(e.estimatedRevenue) as { min: number; max: number };
+      return sum + (rev.min + rev.max) / 2;
+    } catch {
+      return sum;
+    }
+  }, 0);
+
+  // Execution success rate
+  const executedCount = executions.filter((e) => e.status === "executed").length;
+  const errorCount = executions.filter((e) => e.status === "error").length;
+  const successRate = (executedCount + errorCount) > 0
+    ? executedCount / (executedCount + errorCount)
+    : 0;
+
+  // Measured impact
+  const measuredExecs = executions.filter((e) => e.outcomeStatus === "measured" && e.outcomeData);
+  const measuredImpact = measuredExecs.reduce((sum, e) => {
+    try {
+      const outcome = JSON.parse(e.outcomeData!) as { revenueDelta?: number };
+      return sum + (outcome.revenueDelta ?? 0);
+    } catch {
+      return sum;
+    }
+  }, 0);
+
+  // Weekly trends (last 4 weeks)
+  const fourWeeksAgo = new Date(Date.now() - 28 * 24 * 60 * 60 * 1000);
+  const recentExecs = executions.filter((e) => new Date(e.createdAt) >= fourWeeksAgo);
+
+  const weeklyBuckets: Array<{ week: number; created: number; executed: number; dismissed: number }> = [];
+  for (let w = 0; w < 4; w++) {
+    const weekStart = new Date(Date.now() - (w + 1) * 7 * 24 * 60 * 60 * 1000);
+    const weekEnd = new Date(Date.now() - w * 7 * 24 * 60 * 60 * 1000);
+    const inWeek = recentExecs.filter((e) => {
+      const d = new Date(e.createdAt);
+      return d >= weekStart && d < weekEnd;
+    });
+    weeklyBuckets.push({
+      week: w,
+      created: inWeek.length,
+      executed: inWeek.filter((e) => e.status === "executed").length,
+      dismissed: inWeek.filter((e) => e.status === "dismissed").length,
+    });
+  }
+
+  // Goal health (per-goal execute vs dismiss ratio)
+  const goalMap = new Map<string, { executed: number; dismissed: number; total: number }>();
+  for (const e of executions) {
+    const entry = goalMap.get(e.goalId) ?? { executed: 0, dismissed: 0, total: 0 };
+    entry.total++;
+    if (e.status === "executed") entry.executed++;
+    if (e.status === "dismissed") entry.dismissed++;
+    goalMap.set(e.goalId, entry);
+  }
+  const goalHealth = Array.from(goalMap.entries()).map(([goalId, stats]) => ({
+    goalId,
+    ...stats,
+    healthScore: stats.total > 0 ? stats.executed / stats.total : 0,
+  }));
+
+  // High confidence count
+  const highConfidenceCount = pendingExecs.filter(
+    (e) => e.confidenceLevel === "high",
+  ).length;
+
+  return {
+    revenueOpportunity,
+    successRate,
+    measuredImpact,
+    executedCount,
+    errorCount,
+    pendingCount: pendingExecs.length,
+    highConfidenceCount,
+    trends: weeklyBuckets.reverse(),
+    goalHealth,
+    measuredCount: measuredExecs.length,
+  };
 }
 
 // ---------------------------------------------------------------------------

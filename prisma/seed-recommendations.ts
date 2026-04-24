@@ -964,6 +964,374 @@ For each anomalous order:
 4. Recommended action specific to the interpretation`,
     cronIntervalMins: 1440,
   },
+
+  // =========================================================================
+  // CROSS-SOURCE INTELLIGENCE (multi-server goals)
+  // =========================================================================
+
+  {
+    ruleKey: "email_shopify_complaint_patterns",
+    title: "Customer Complaint Patterns Across Email & Orders",
+    description:
+      "Cross-reference support emails with order data to detect product or fulfillment issues causing repeated complaints",
+    category: "customer",
+    priority: "high",
+    requiredServers: JSON.stringify(["shopify", "email"]),
+    analysisPrompt: `You are cross-referencing support emails with Shopify order data to find complaint patterns.
+
+1. Use email tools to search for recent support emails (last 14 days) containing complaint keywords: "broken", "damaged", "wrong", "missing", "late", "refund", "return", "complaint", "disappointed", "poor quality".
+
+2. For each complaint email, extract the customer email address and the product/order referenced.
+
+3. Use shopify_query to look up those customers' orders: resource="orders", filter by customer email.
+
+4. Cross-reference to find:
+   - Same product generating multiple complaints from different customers
+   - Same customer complaining multiple times
+   - Fulfillment-related vs product-quality complaints
+   - Correlation between specific shipping methods and late delivery complaints
+
+Set applicable=true if you find patterns (2+ complaints about the same product, or 3+ complaints from the same customer).`,
+    actionPrompt: `Present the complaint pattern analysis:
+
+For each pattern found:
+1. What product(s) or fulfillment issue is generating complaints
+2. How many customers are affected and the timeframe
+3. Specific complaint quotes from emails
+4. Recommended action:
+   - Product quality issue: Flag for review, consider pulling from store temporarily
+   - Fulfillment issue: Investigate shipping partner, consider proactive tracking notifications
+   - Repeat customer complaints: Prioritize for personal outreach with discount/resolution
+   - Sizing complaints: Update product descriptions with better sizing guidance`,
+    cronIntervalMins: 720,
+  },
+
+  {
+    ruleKey: "sheets_shopify_margin_erosion",
+    title: "Margin Erosion Detection via Spreadsheet Cost Data",
+    description:
+      "Compare wholesale/COGS data tracked in Google Sheets against live Shopify prices to detect margin erosion",
+    category: "reporting",
+    priority: "high",
+    requiredServers: JSON.stringify(["shopify", "google-sheets"]),
+    analysisPrompt: `You are comparing cost data in Google Sheets against Shopify selling prices to find margin erosion.
+
+1. Use Google Sheets tools to find spreadsheets containing cost/COGS data. Look for sheets with columns like "cost", "wholesale", "COGS", "supplier price", "SKU", or "product".
+
+2. Read the cost data and extract product identifiers (SKUs, product names) and their costs.
+
+3. Use shopify_query to get current product prices: resource="products", fields=["id","title","variants.sku","variants.price","variants.inventoryQuantity","status"], limit=50, filter="status:active"
+
+4. Match products between sheets and Shopify by SKU or product name.
+
+5. Calculate margin for each matched product: (selling price - cost) / selling price * 100
+
+6. Flag products where:
+   - Margin is below 20% (dangerously low)
+   - Cost has increased but price hasn't been adjusted
+   - High-volume products with shrinking margins
+
+Set applicable=true if you find products with margins below 20% or evidence of cost increases not reflected in pricing.`,
+    actionPrompt: `Present the margin analysis:
+
+1. Products with dangerously low margins (<20%), sorted by revenue impact
+2. Products where costs appear to have increased recently
+3. For each flagged product:
+   - Current cost, selling price, and margin percentage
+   - Suggested new price to reach target margin (40-60%)
+   - Estimated revenue impact of the price change
+4. Recommended actions: price adjustments, supplier negotiation, or product discontinuation`,
+    cronIntervalMins: 1440,
+  },
+
+  // =========================================================================
+  // MARKETING INTELLIGENCE
+  // =========================================================================
+
+  {
+    ruleKey: "seasonal_promotion_timing",
+    title: "Seasonal Promotion Timing Optimizer",
+    description:
+      "Analyze historical sales patterns to identify the optimal timing for seasonal promotions and flash sales",
+    category: "marketing",
+    priority: "medium",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are analyzing sales patterns to recommend optimal promotion timing.
+
+1. Use shopify_query to get orders from the last 90 days: resource="orders", fields=["id","createdAt","totalPriceSet.shopMoney.amount","lineItems.title","lineItems.quantity","discountCodes"], limit=100
+
+2. Analyze:
+   - Day-of-week sales patterns (which days get most orders?)
+   - Time-of-month patterns (beginning vs end of month)
+   - Which products have seasonal demand curves
+   - Current discount code usage and effectiveness
+   - Any upcoming holidays or events in the next 30 days
+
+3. Identify windows where a promotion would have maximum impact based on natural traffic patterns.
+
+Set applicable=true if you can identify clear timing patterns for optimization.`,
+    actionPrompt: `Present promotion timing recommendations:
+
+1. Best days/times to launch promotions based on traffic data
+2. Products with seasonal demand that should be promoted now
+3. Suggested promotion mechanics (% off, BOGO, free shipping)
+4. Estimated revenue impact based on historical conversion rates
+5. Specific promotion calendar for the next 30 days`,
+    cronIntervalMins: 2880,
+  },
+
+  {
+    ruleKey: "discount_code_abuse_detector",
+    title: "Discount Code Abuse Detection",
+    description:
+      "Monitor discount code usage patterns to detect abuse, excessive stacking, or codes that are cutting too deep into margins",
+    category: "marketing",
+    priority: "high",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are auditing discount code usage for signs of abuse or excessive margin impact.
+
+1. Use shopify_query to get recent orders with discounts: resource="orders", fields=["id","name","createdAt","totalPriceSet.shopMoney.amount","totalDiscountsSet.shopMoney.amount","discountCodes","customer.email","customer.numberOfOrders"], limit=100, filter="financial_status:paid"
+
+2. Analyze:
+   - Which discount codes are used most frequently
+   - Average discount amount per order
+   - Customers using multiple different codes across orders
+   - Orders where discount exceeds 30% of order value
+   - Codes being shared publicly (many different customers using the same code)
+   - First-time buyer codes being reused by returning customers
+
+Set applicable=true if you find discount abuse patterns or codes cutting margins below 20%.`,
+    actionPrompt: `Present discount code audit findings:
+
+1. Codes being abused (shared publicly, reused by same customer)
+2. Average margin impact per code
+3. Customers exploiting multiple codes
+4. Recommended actions:
+   - Deactivate leaked codes
+   - Add usage limits
+   - Switch to unique, single-use codes
+   - Tighten code stacking rules`,
+    cronIntervalMins: 1440,
+  },
+
+  {
+    ruleKey: "cross_sell_opportunity_identifier",
+    title: "Cross-Sell Opportunity Finder",
+    description:
+      "Analyze purchase patterns to identify products frequently bought together and recommend cross-sell strategies",
+    category: "marketing",
+    priority: "medium",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are analyzing multi-item orders to find cross-sell opportunities.
+
+1. Use shopify_query to get multi-item orders: resource="orders", fields=["id","lineItems.title","lineItems.productId","lineItems.quantity","totalPriceSet.shopMoney.amount","customer.numberOfOrders"], limit=100, filter="financial_status:paid"
+
+2. Build a co-occurrence matrix: which products appear together in the same order?
+
+3. Identify:
+   - Product pairs that appear together 3+ times
+   - Products that are "gateway" items (frequently the first purchase that leads to repeat orders)
+   - High-value products that are rarely cross-sold but could be
+   - Categories that complement each other
+
+Set applicable=true if you find clear product affinity patterns.`,
+    actionPrompt: `Present cross-sell recommendations:
+
+1. Top product pairs that are frequently bought together
+2. "Gateway" products that lead to repeat purchases
+3. For each opportunity:
+   - The product affinity score
+   - Current vs potential attachment rate
+   - Suggested placement (product page, cart, email)
+   - Estimated revenue from cross-sell implementation
+4. Quick wins that can be implemented immediately vs longer-term strategies`,
+    cronIntervalMins: 2880,
+  },
+
+  // =========================================================================
+  // CUSTOMER LIFECYCLE
+  // =========================================================================
+
+  {
+    ruleKey: "churn_risk_early_warning",
+    title: "Customer Churn Risk Early Warning",
+    description:
+      "Identify customers whose purchase frequency is declining or who haven't returned within their typical buying cycle",
+    category: "customer",
+    priority: "high",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are identifying customers at risk of churning based on their purchase patterns.
+
+1. Use shopify_query to get customers with multiple orders: resource="customers", fields=["id","firstName","lastName","email","numberOfOrders","amountSpent.amount","ordersCount","lastOrder.createdAt","lastOrder.totalPriceSet.shopMoney.amount","createdAt"], limit=50
+
+2. For customers with 2+ orders, calculate:
+   - Average time between orders
+   - Time since last order
+   - Whether current gap exceeds 1.5x their average
+   - Trend: are order values increasing or decreasing?
+   - Total lifetime value
+
+3. Classify risk levels:
+   - High: Last order gap > 2x average AND declining order values
+   - Medium: Last order gap > 1.5x average
+   - Low: Slightly overdue
+
+Set applicable=true if you find 3+ customers at medium or high churn risk.`,
+    actionPrompt: `Present churn risk report:
+
+For each at-risk customer:
+1. Name, email, lifetime value, and order count
+2. Their typical purchase cycle vs current gap
+3. Risk level and contributing factors
+4. Recommended re-engagement action:
+   - High risk: Personalized outreach with exclusive offer
+   - Medium risk: Win-back email with product recommendations based on purchase history
+   - Low risk: Gentle reminder or new arrival notification
+5. Estimated revenue at risk if these customers churn`,
+    cronIntervalMins: 1440,
+  },
+
+  {
+    ruleKey: "vip_customer_engagement",
+    title: "VIP Customer Engagement Monitor",
+    description:
+      "Track top-spending customers and ensure they receive appropriate recognition, perks, and personalized attention",
+    category: "customer",
+    priority: "medium",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are monitoring VIP customer engagement and satisfaction.
+
+1. Use shopify_query to get top customers by spend: resource="customers", fields=["id","firstName","lastName","email","numberOfOrders","amountSpent.amount","lastOrder.createdAt","lastOrder.totalPriceSet.shopMoney.amount","tags","note"], limit=25
+
+2. Identify VIP customers (top 10% by lifetime value or 5+ orders).
+
+3. For each VIP, check:
+   - When was their last order?
+   - Is their order frequency declining?
+   - Do they have a "VIP" tag or special note?
+   - Have they received any special treatment recently?
+
+Set applicable=true if you find VIP customers who haven't ordered in 30+ days or who lack VIP recognition.`,
+    actionPrompt: `Present VIP engagement recommendations:
+
+1. List of VIP customers requiring attention
+2. For each:
+   - Name, lifetime value, order count
+   - Last activity and current engagement status
+   - Recommended action:
+     * Tag as VIP if not already tagged
+     * Personal thank-you note for milestone orders
+     * Early access to new products
+     * Exclusive discount or loyalty reward
+3. Estimated impact of VIP retention on revenue`,
+    cronIntervalMins: 2880,
+  },
+
+  // =========================================================================
+  // OPERATIONS
+  // =========================================================================
+
+  {
+    ruleKey: "shipping_cost_optimizer",
+    title: "Shipping Cost Optimization Finder",
+    description:
+      "Analyze shipping costs vs order values to find opportunities for free shipping thresholds, shipping method changes, or carrier negotiations",
+    category: "operations",
+    priority: "medium",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are analyzing shipping economics to find optimization opportunities.
+
+1. Use shopify_query to get recent orders with shipping data: resource="orders", fields=["id","name","totalPriceSet.shopMoney.amount","totalShippingPriceSet.shopMoney.amount","shippingLines.title","shippingLines.price","fulfillments.trackingCompany","lineItems.quantity","createdAt"], limit=100, filter="financial_status:paid"
+
+2. Calculate:
+   - Average shipping cost as % of order value
+   - Most used shipping methods and their costs
+   - Orders where shipping > 15% of order value
+   - Distribution of order values around potential free shipping thresholds
+   - How many orders would qualify if free shipping threshold was set at various price points
+
+Set applicable=true if shipping costs average >10% of order value or there's a clear optimal free shipping threshold.`,
+    actionPrompt: `Present shipping optimization recommendations:
+
+1. Current shipping cost analysis (avg % of order value)
+2. Optimal free shipping threshold with projected impact:
+   - What % of orders would qualify
+   - Expected AOV increase from customers adding items to qualify
+   - Net margin impact
+3. Carrier comparison if multiple carriers are used
+4. Specific recommendations (adjust threshold, switch carriers, negotiate rates)`,
+    cronIntervalMins: 2880,
+  },
+
+  {
+    ruleKey: "return_pattern_detection",
+    title: "Product Return Pattern Detection",
+    description:
+      "Identify products with unusually high return or refund rates and diagnose potential causes from order and product data",
+    category: "operations",
+    priority: "high",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are analyzing return/refund patterns to identify problematic products.
+
+1. Use shopify_query to get refunded orders: resource="orders", fields=["id","name","createdAt","financial_status","totalPriceSet.shopMoney.amount","refunds.createdAt","refunds.totalRefundedSet.shopMoney.amount","refunds.refundLineItems.lineItem.title","refunds.refundLineItems.lineItem.productId","refunds.refundLineItems.quantity","refunds.note"], limit=100
+
+2. Also get total orders for comparison: resource="orders", fields=["id","lineItems.title","lineItems.productId"], limit=100, filter="financial_status:paid"
+
+3. Calculate per-product refund rate and identify:
+   - Products with refund rate > 10%
+   - Recent spikes in returns for specific products
+   - Common refund reasons or notes
+   - Whether returns correlate with specific variants (size, color)
+
+Set applicable=true if any product has a refund rate > 10% or there's a recent spike.`,
+    actionPrompt: `Present return analysis findings:
+
+For each problematic product:
+1. Product name, refund rate, and number of returns
+2. Common reasons for returns (from notes)
+3. Whether specific variants are more returned than others
+4. Recommended actions:
+   - Update product descriptions/images to set better expectations
+   - Add size guides or comparison photos
+   - Consider quality improvements or supplier change
+   - Flag for temporary removal if rate is very high
+5. Estimated margin saved by reducing return rate by 50%`,
+    cronIntervalMins: 1440,
+  },
+
+  {
+    ruleKey: "fulfillment_sla_compliance",
+    title: "Fulfillment SLA Compliance Checker",
+    description:
+      "Monitor order processing times to ensure fulfillment meets SLA targets and identify bottlenecks",
+    category: "operations",
+    priority: "medium",
+    requiredServers: JSON.stringify(["shopify"]),
+    analysisPrompt: `You are auditing fulfillment speed and SLA compliance.
+
+1. Use shopify_query to get recent orders with fulfillment data: resource="orders", fields=["id","name","createdAt","fulfillments.createdAt","fulfillments.status","fulfillments.trackingCompany","fulfillments.trackingNumber","lineItems.title","lineItems.fulfillmentStatus"], limit=100, filter="fulfillment_status:shipped"
+
+2. Also check unfulfilled orders: resource="orders", fields=["id","name","createdAt","lineItems.title","lineItems.fulfillmentStatus"], limit=50, filter="fulfillment_status:unfulfilled"
+
+3. Calculate:
+   - Average time from order creation to first fulfillment
+   - Orders taking > 48 hours to fulfill
+   - Orders taking > 5 days to fulfill (critical)
+   - Currently unfulfilled orders older than 24 hours
+
+Set applicable=true if average fulfillment time > 48 hours or there are orders unfulfilled for > 3 days.`,
+    actionPrompt: `Present fulfillment audit results:
+
+1. Average fulfillment time and trend
+2. Orders currently stuck unfulfilled with aging
+3. Products or order types causing delays
+4. Recommended actions:
+   - Flag overdue orders for immediate attention
+   - Identify process bottlenecks
+   - Consider pre-packing popular items
+   - Set up automated alerts for aging orders`,
+    cronIntervalMins: 720,
+  },
 ];
 
 async function main() {

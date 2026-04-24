@@ -1,5 +1,16 @@
 import { useState, useCallback } from "react";
 import { AGENT_NAME } from "../../config/agent";
+import { ActionPreview } from "../recommendations/ActionPreview";
+import {
+  CATEGORY_META,
+  PRIORITY_META,
+  STATUS_CONFIG,
+  CONFIDENCE_META,
+  formatServerName,
+  getServerIcon,
+  formatCurrency,
+  getImpactScoreColor,
+} from "./constants";
 
 interface LinkedGoal {
   readonly id: string;
@@ -47,6 +58,10 @@ export interface GoalExecution {
   readonly outcomeStatus?: string | null;
   readonly outcomeData?: OutcomeData | null;
   readonly linkedGoals?: readonly LinkedGoal[];
+  readonly dryRunResult?: string | null;
+  readonly feedbackRating?: number | null;
+  readonly compositeScore?: number | null;
+  readonly queued?: boolean;
 }
 
 interface GoalExecutionCardProps {
@@ -54,69 +69,9 @@ interface GoalExecutionCardProps {
   readonly onExecute: (execution: GoalExecution) => void;
   readonly onDismiss: (id: string) => void;
   readonly onMeasureOutcome?: (id: string) => void;
-}
-
-const CATEGORY_META: Record<
-  GoalExecution["category"],
-  { color: string; icon: string; label: string }
-> = {
-  catalog: { color: "#8B5CF6", icon: "products", label: "Catalog" },
-  reporting: { color: "#10B981", icon: "chart-vertical", label: "Reporting" },
-  customer: { color: "#3B82F6", icon: "customers", label: "Customer" },
-  marketing: { color: "#EC4899", icon: "megaphone", label: "Marketing" },
-  operations: { color: "#F59E0B", icon: "settings", label: "Operations" },
-  inventory: { color: "#7C3AED", icon: "inventory", label: "Inventory" },
-  sync: { color: "#F97316", icon: "refresh", label: "Sync" },
-  general: { color: "#6B7280", icon: "apps", label: "General" },
-};
-
-const PRIORITY_META: Record<
-  GoalExecution["priority"],
-  { color: string; bg: string; label: string }
-> = {
-  low: { color: "#64748B", bg: "#F1F5F9", label: "Low" },
-  medium: { color: "#D97706", bg: "#FFFBEB", label: "Medium" },
-  high: { color: "#DC2626", bg: "#FEF2F2", label: "High" },
-  critical: { color: "#9333EA", bg: "#FAF5FF", label: "Critical" },
-};
-
-const STATUS_CONFIG: Record<
-  GoalExecution["status"],
-  { color: string; bg: string; label: string }
-> = {
-  pending: { color: "#64748B", bg: "#F1F5F9", label: "Ready" },
-  in_progress: { color: "#2563EB", bg: "#EFF6FF", label: "Running..." },
-  completed: { color: "#16A34A", bg: "#F0FDF4", label: "Completed" },
-  failed: { color: "#DC2626", bg: "#FEF2F2", label: "Failed" },
-};
-
-const SERVER_DISPLAY: Record<string, { icon: string; label: string }> = {
-  shopify: { icon: "cart", label: "Shopify" },
-  "google-sheets": { icon: "file", label: "Google Sheets" },
-  "google-drive": { icon: "folder", label: "Google Drive" },
-  "google-docs": { icon: "page-reference", label: "Google Docs" },
-  airtable: { icon: "table", label: "Airtable" },
-  postgres: { icon: "database", label: "PostgreSQL" },
-  mysql: { icon: "database", label: "MySQL" },
-  s3: { icon: "upload", label: "Amazon S3" },
-  email: { icon: "email", label: "Email" },
-  ftp: { icon: "download", label: "FTP" },
-};
-
-function formatServerName(name: string): string {
-  const base = name.split("__")[0] ?? name;
-  return (
-    SERVER_DISPLAY[base]?.label ??
-    base
-      .split("-")
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(" ")
-  );
-}
-
-function getServerIcon(name: string): string {
-  const base = name.split("__")[0] ?? name;
-  return SERVER_DISPLAY[base]?.icon ?? "apps";
+  readonly selected?: boolean;
+  readonly onToggleSelect?: (id: string) => void;
+  readonly onFeedback?: (id: string, type: "helpful" | "not_helpful") => void;
 }
 
 const DEFAULT_NEXT_STEPS: Record<GoalExecution["category"], string[]> = {
@@ -162,35 +117,22 @@ const DEFAULT_NEXT_STEPS: Record<GoalExecution["category"], string[]> = {
   ],
 };
 
-function formatCurrency(value: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
-function getImpactScoreColor(score: number): string {
-  if (score >= 70) return "#16A34A";
-  if (score >= 40) return "#D97706";
-  return "#9CA3AF";
-}
-
-const CONFIDENCE_META: Record<string, { label: string; color: string; bg: string }> = {
-  high: { label: "High Confidence", color: "#16A34A", bg: "#F0FDF4" },
-  medium: { label: "Medium Confidence", color: "#D97706", bg: "#FFFBEB" },
-  low: { label: "Low Confidence", color: "#64748B", bg: "#F1F5F9" },
-};
-
 export function GoalExecutionCard({
   execution,
   onExecute,
   onDismiss,
   onMeasureOutcome,
+  selected,
+  onToggleSelect,
+  onFeedback,
 }: GoalExecutionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [reasoningExpanded, setReasoningExpanded] = useState(false);
+  const [feedbackGiven, setFeedbackGiven] = useState<"helpful" | "not_helpful" | null>(
+    execution.feedbackRating != null
+      ? (execution.feedbackRating >= 4 ? "helpful" : "not_helpful")
+      : null,
+  );
 
   const handleExecute = useCallback(() => {
     onExecute(execution);
@@ -207,6 +149,8 @@ export function GoalExecutionCard({
   const isExecuting = execution.status === "in_progress";
   const isCompleted = execution.status === "completed";
   const isFailed = execution.status === "failed";
+  const isQueued = !isExecuting && !isCompleted && Boolean(execution.queued);
+  const isActionBlocked = isExecuting || isCompleted || isQueued;
   const categoryMeta = CATEGORY_META[execution.category] ?? CATEGORY_META.general;
   const priorityMeta = PRIORITY_META[execution.priority] ?? PRIORITY_META.medium;
   const statusConfig = STATUS_CONFIG[execution.status];
@@ -254,6 +198,28 @@ export function GoalExecutionCard({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {onToggleSelect && execution.status === "pending" && (
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  cursor: "pointer",
+                  marginRight: 4,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selected ?? false}
+                  onChange={() => onToggleSelect(execution.id)}
+                  style={{
+                    width: 18,
+                    height: 18,
+                    accentColor: "#4F46E5",
+                    cursor: "pointer",
+                  }}
+                />
+              </label>
+            )}
             <span
               style={{
                 display: "inline-flex",
@@ -666,32 +632,108 @@ export function GoalExecutionCard({
           </div>
         )}
 
+        {/* Action Preview (dry run) */}
+        {execution.status === "pending" && (
+          <ActionPreview
+            executionId={execution.id}
+            cachedPreview={execution.dryRunResult}
+          />
+        )}
+
+        {/* Feedback UI */}
+        {isCompleted && !feedbackGiven && onFeedback && (
+          <div
+            style={{
+              borderTop: "1px solid var(--s-color-border-secondary, #e3e3e3)",
+              paddingTop: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+            }}
+          >
+            <span style={{ fontSize: 13, color: "var(--s-color-text-secondary, #616161)" }}>
+              Was this helpful?
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setFeedbackGiven("helpful");
+                onFeedback(execution.id, "helpful");
+              }}
+              style={{
+                padding: "4px 12px",
+                background: "#F0FDF4",
+                color: "#16A34A",
+                border: "1px solid #BBF7D0",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+              }}
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFeedbackGiven("not_helpful");
+                onFeedback(execution.id, "not_helpful");
+              }}
+              style={{
+                padding: "4px 12px",
+                background: "#FEF2F2",
+                color: "#DC2626",
+                border: "1px solid #FECACA",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+              }}
+            >
+              No
+            </button>
+          </div>
+        )}
+        {feedbackGiven && (
+          <div
+            style={{
+              fontSize: 12,
+              color: feedbackGiven === "helpful" ? "#16A34A" : "#DC2626",
+              fontWeight: 500,
+            }}
+          >
+            {feedbackGiven === "helpful" ? "Thanks for the feedback!" : "We'll improve future recommendations."}
+          </div>
+        )}
+
         {/* Action buttons */}
         <div style={{ display: "flex", gap: 10, paddingTop: 4 }}>
           <button
             type="button"
             onClick={handleExecute}
-            disabled={isExecuting || isCompleted}
+            disabled={isActionBlocked}
             style={{
               flex: 1,
               padding: "12px 20px",
               background:
                 isCompleted
                   ? "#F0FDF4"
-                  : isExecuting
+                  : isExecuting || isQueued
                     ? "var(--s-color-bg-fill-disabled, #e3e3e3)"
                     : "var(--s-color-bg-fill-emphasis, #303030)",
               color:
                 isCompleted
                   ? "#16A34A"
-                  : isExecuting
+                  : isExecuting || isQueued
                     ? "var(--s-color-text-disabled, #b5b5b5)"
                     : "#fff",
               border: isCompleted ? "1px solid #BBF7D0" : "none",
               borderRadius: 10,
               fontSize: 14,
               fontWeight: 600,
-              cursor: isExecuting || isCompleted ? "default" : "pointer",
+              cursor: isActionBlocked ? "default" : "pointer",
               transition: "background 0.15s, transform 0.1s",
               fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
               display: "flex",
@@ -700,12 +742,12 @@ export function GoalExecutionCard({
               gap: 8,
             }}
             onMouseEnter={(e) => {
-              if (!isExecuting && !isCompleted) {
+              if (!isActionBlocked) {
                 e.currentTarget.style.background = "#1a1a1a";
               }
             }}
             onMouseLeave={(e) => {
-              if (!isExecuting && !isCompleted) {
+              if (!isActionBlocked) {
                 e.currentTarget.style.background =
                   "var(--s-color-bg-fill-emphasis, #303030)";
               }
@@ -715,6 +757,11 @@ export function GoalExecutionCard({
               <>
                 <s-spinner size="base" accessibilityLabel="Running" />
                 Running...
+              </>
+            ) : isQueued ? (
+              <>
+                <s-spinner size="base" accessibilityLabel="Queued" />
+                Queued...
               </>
             ) : isCompleted ? (
               <>

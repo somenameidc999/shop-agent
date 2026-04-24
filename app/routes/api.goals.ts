@@ -12,13 +12,23 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import {
   getGoalsForShop,
+  getGoalExecutionById,
   getGoalExecutionsForShop,
   createGoal,
   updateGoal,
   deleteGoal,
   inferGoalDetails,
   dismissGoalExecution,
+  batchExecuteGoalExecutions,
+  batchDismissGoalExecutions,
+  undismissGoalExecution,
+  getRecentlyDismissedExecutions,
+  dryRunGoalExecution,
+  getDashboardStats,
 } from "../services/goals.server";
+import {
+  recordFeedback,
+} from "../services/feedback.server";
 import {
   enqueueGoalAnalysis,
   enqueueGoalExecution,
@@ -35,7 +45,10 @@ function parseJsonField(value: unknown): unknown {
   }
 }
 
-export function normalizeExecution(rec: Record<string, unknown>) {
+export function normalizeExecution(
+  rec: Record<string, unknown>,
+  queuedIds?: ReadonlySet<string>,
+) {
   let status = rec.status as string;
   if (status === "new") status = "pending";
   if (status === "executed") status = "completed";
@@ -51,9 +64,13 @@ export function normalizeExecution(rec: Record<string, unknown>) {
     ? goalExecutionLinks.map((link) => link.goal)
     : [];
 
+  const id = rec.id as string | undefined;
+  const queued = Boolean(id && queuedIds?.has(id));
+
   return {
     ...rec,
     status,
+    queued,
     mcpServersUsed: typeof rec.mcpServersUsed === "string"
       ? (rec.mcpServersUsed as string).split(",").filter(Boolean)
       : rec.mcpServersUsed,
@@ -65,7 +82,34 @@ export function normalizeExecution(rec: Record<string, unknown>) {
     baselineData: parseJsonField(rec.baselineData),
     linkedGoals,
     goalExecutionLinks: undefined,
+    dryRunResult: rec.dryRunResult ?? null,
+    feedbackRating: rec.feedbackRating ?? null,
+    compositeScore: rec.compositeScore ?? null,
+    dismissedAt: rec.dismissedAt ?? null,
+    triggerSource: rec.triggerSource ?? null,
   };
+}
+
+async function getQueuedExecutionIds(shop: string): Promise<Set<string>> {
+  const jobs = await prisma.backgroundJob.findMany({
+    where: {
+      shop,
+      jobType: "goal_execute",
+      status: { in: ["pending", "running"] },
+    },
+    select: { payload: true },
+  });
+  const ids = new Set<string>();
+  for (const job of jobs) {
+    if (!job.payload) continue;
+    try {
+      const parsed = JSON.parse(job.payload) as { executionId?: unknown };
+      if (typeof parsed.executionId === "string") ids.add(parsed.executionId);
+    } catch {
+      // ignore malformed payload
+    }
+  }
+  return ids;
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -92,6 +136,39 @@ export async function loader({ request }: LoaderFunctionArgs) {
       startedAt: job.startedAt,
       completedAt: job.completedAt,
       createdAt: job.createdAt,
+    });
+  }
+
+  if (type === "dismissed") {
+    const since = url.searchParams.get("since");
+    const sinceDate = since ? new Date(since) : new Date(Date.now() - 30 * 60 * 1000);
+    const [dismissed, queuedIds] = await Promise.all([
+      getRecentlyDismissedExecutions(session.shop, sinceDate),
+      getQueuedExecutionIds(session.shop),
+    ]);
+    const normalized = dismissed.map((e) =>
+      normalizeExecution(e as unknown as Record<string, unknown>, queuedIds),
+    );
+    return Response.json({ executions: normalized, total: normalized.length });
+  }
+
+  if (type === "stats") {
+    const stats = await getDashboardStats(session.shop);
+    return Response.json(stats);
+  }
+
+  if (type === "execution") {
+    const id = url.searchParams.get("id");
+    if (!id) {
+      return Response.json({ error: "id is required" }, { status: 400 });
+    }
+    const execution = await getGoalExecutionById(id, session.shop);
+    if (!execution) {
+      return Response.json({ error: "Execution not found" }, { status: 404 });
+    }
+    const queuedIds = await getQueuedExecutionIds(session.shop);
+    return Response.json({
+      execution: normalizeExecution(execution as unknown as Record<string, unknown>, queuedIds),
     });
   }
 
@@ -138,13 +215,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (goalId) filters.goalId = goalId;
   if (sortBy) filters.sortBy = sortBy;
 
-  const { data: rawExecutions, total } = await getGoalExecutionsForShop(
-    session.shop,
-    filters,
-    { limit, offset },
-  );
+  const [{ data: rawExecutions, total }, queuedIds] = await Promise.all([
+    getGoalExecutionsForShop(session.shop, filters, { limit, offset }),
+    getQueuedExecutionIds(session.shop),
+  ]);
 
-  const executions = rawExecutions.map((e) => normalizeExecution(e as unknown as Record<string, unknown>));
+  const executions = rawExecutions.map((e) =>
+    normalizeExecution(e as unknown as Record<string, unknown>, queuedIds),
+  );
 
   return Response.json({ executions, total });
 }
@@ -388,6 +466,154 @@ export async function action({ request }: ActionFunctionArgs) {
       console.error("[API] Error enqueuing outcome measurement:", error);
       return Response.json(
         { error: "Failed to enqueue outcome measurement", details: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
+  // Action: batch execute
+  if (actionType === "batch_execute") {
+    const executionIds = body.executionIds as string[] | undefined;
+    if (!executionIds || !Array.isArray(executionIds) || executionIds.length === 0) {
+      return Response.json(
+        { error: "executionIds array is required" },
+        { status: 400 },
+      );
+    }
+    if (executionIds.length > 10) {
+      return Response.json(
+        { error: "Maximum 10 executions per batch" },
+        { status: 400 },
+      );
+    }
+    try {
+      const results = await batchExecuteGoalExecutions(session.shop, executionIds);
+      return Response.json({ success: true, results });
+    } catch (error) {
+      console.error("[API] Error batch executing:", error);
+      return Response.json(
+        { error: "Failed to batch execute", details: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
+  // Action: batch dismiss
+  if (actionType === "batch_dismiss") {
+    const executionIds = body.executionIds as string[] | undefined;
+    if (!executionIds || !Array.isArray(executionIds) || executionIds.length === 0) {
+      return Response.json(
+        { error: "executionIds array is required" },
+        { status: 400 },
+      );
+    }
+    try {
+      const dismissed = await batchDismissGoalExecutions(session.shop, executionIds);
+      return Response.json({ success: true, dismissed });
+    } catch (error) {
+      console.error("[API] Error batch dismissing:", error);
+      return Response.json(
+        { error: "Failed to batch dismiss", details: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
+  // Action: undismiss
+  if (actionType === "undismiss") {
+    const executionId = body.executionId as string | undefined;
+    if (!executionId) {
+      return Response.json(
+        { error: "executionId is required" },
+        { status: 400 },
+      );
+    }
+    try {
+      const execution = await undismissGoalExecution(executionId, session.shop);
+      return Response.json({ success: true, execution });
+    } catch (error) {
+      console.error("[API] Error undismissing:", error);
+      return Response.json(
+        { error: error instanceof Error ? error.message : "Failed to undismiss" },
+        { status: 400 },
+      );
+    }
+  }
+
+  // Action: dry_run (preview)
+  if (actionType === "dry_run") {
+    const executionId = body.executionId as string | undefined;
+    if (!executionId) {
+      return Response.json(
+        { error: "executionId is required" },
+        { status: 400 },
+      );
+    }
+    try {
+      const execution = await prisma.goalExecution.findUnique({
+        where: { id: executionId },
+      });
+      if (!execution || execution.shop !== session.shop) {
+        return Response.json({ error: "GoalExecution not found" }, { status: 404 });
+      }
+      const result = await dryRunGoalExecution(executionId);
+      return Response.json({ success: true, ...result });
+    } catch (error) {
+      console.error("[API] Error running dry run:", error);
+      return Response.json(
+        { error: "Failed to preview", details: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
+  // Action: feedback
+  if (actionType === "feedback") {
+    const executionId = body.executionId as string | undefined;
+    const feedbackType = body.feedbackType as string | undefined;
+    if (!executionId || !feedbackType) {
+      return Response.json(
+        { error: "executionId and feedbackType are required" },
+        { status: 400 },
+      );
+    }
+    const validTypes = ["execute", "dismiss", "helpful", "not_helpful"];
+    if (!validTypes.includes(feedbackType)) {
+      return Response.json(
+        { error: `feedbackType must be one of: ${validTypes.join(", ")}` },
+        { status: 400 },
+      );
+    }
+    try {
+      const execution = await prisma.goalExecution.findUnique({
+        where: { id: executionId },
+      });
+      if (!execution || execution.shop !== session.shop) {
+        return Response.json({ error: "GoalExecution not found" }, { status: 404 });
+      }
+      await recordFeedback(
+        session.shop,
+        execution.goalId,
+        executionId,
+        feedbackType as "execute" | "dismiss" | "helpful" | "not_helpful",
+        body.rating as number | undefined,
+        body.note as string | undefined,
+      );
+
+      // Update the execution's feedback fields
+      await prisma.goalExecution.update({
+        where: { id: executionId },
+        data: {
+          feedbackRating: body.rating as number | undefined,
+          feedbackNote: body.note as string | undefined,
+        },
+      });
+
+      return Response.json({ success: true });
+    } catch (error) {
+      console.error("[API] Error recording feedback:", error);
+      return Response.json(
+        { error: "Failed to record feedback", details: error instanceof Error ? error.message : String(error) },
         { status: 500 },
       );
     }

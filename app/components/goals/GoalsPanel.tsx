@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { GoalExecutionCard, type GoalExecution } from "./GoalExecutionCard";
 import { AGENT_NAME } from "../../config/agent";
+import { useSelection } from "../../hooks/useSelection";
+import { BulkActionBar } from "../recommendations/BulkActionBar";
+import { DismissedTray } from "../recommendations/DismissedTray";
 
 type CategoryFilter = "all" | GoalExecution["category"];
 type SortOption = "impactScore" | "priority" | "newest";
@@ -256,8 +259,11 @@ export function GoalsPanel() {
   const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>("all");
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("impactScore");
+  const [isBatchExecuting, setIsBatchExecuting] = useState(false);
+  const [dismissTrigger, setDismissTrigger] = useState(0);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const jobPollRef = useRef<NodeJS.Timeout | null>(null);
+  const selection = useSelection();
 
   const stopJobPolling = useCallback(() => {
     if (jobPollRef.current) {
@@ -465,6 +471,73 @@ export function GoalsPanel() {
     }
   }, [fetchExecutions]);
 
+  const handleBatchExecute = useCallback(async () => {
+    const ids = Array.from(selection.selectedIds);
+    if (ids.length === 0) return;
+    setIsBatchExecuting(true);
+    try {
+      const response = await fetch("/api/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "batch_execute", executionIds: ids }),
+      });
+      if (response.ok) {
+        setExecutions((prev) =>
+          prev.map((e) =>
+            ids.includes(e.id) ? { ...e, status: "in_progress" as const } : e,
+          ),
+        );
+        selection.deselectAll();
+      }
+    } catch (error) {
+      console.error("Failed to batch execute:", error);
+    } finally {
+      setIsBatchExecuting(false);
+    }
+  }, [selection]);
+
+  const handleBatchDismiss = useCallback(async () => {
+    const ids = Array.from(selection.selectedIds);
+    if (ids.length === 0) return;
+    try {
+      const response = await fetch("/api/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "batch_dismiss", executionIds: ids }),
+      });
+      if (response.ok) {
+        setExecutions((prev) => prev.filter((e) => !ids.includes(e.id)));
+        selection.deselectAll();
+        setDismissTrigger((t) => t + 1);
+      }
+    } catch (error) {
+      console.error("Failed to batch dismiss:", error);
+    }
+  }, [selection]);
+
+  const handleSelectHighConfidence = useCallback(() => {
+    selection.selectByFilter(executions, (e) =>
+      e.status === "pending" && e.confidenceLevel === "high",
+    );
+  }, [executions, selection]);
+
+  const handleFeedback = useCallback(async (id: string, type: "helpful" | "not_helpful") => {
+    try {
+      await fetch("/api/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "feedback",
+          executionId: id,
+          feedbackType: type,
+          rating: type === "helpful" ? 5 : 1,
+        }),
+      });
+    } catch (error) {
+      console.error("Failed to record feedback:", error);
+    }
+  }, []);
+
   useEffect(() => {
     void fetchExecutions();
     void fetchGoals();
@@ -475,13 +548,15 @@ export function GoalsPanel() {
   }, [stopJobPolling]);
 
   useEffect(() => {
-    const hasInProgress = executions.some((e) => e.status === "in_progress");
+    const hasActive = executions.some(
+      (e) => e.status === "in_progress" || e.queued,
+    );
 
-    if (hasInProgress && !pollIntervalRef.current) {
+    if (hasActive && !pollIntervalRef.current) {
       pollIntervalRef.current = setInterval(() => {
         void fetchExecutions();
       }, 3000);
-    } else if (!hasInProgress && pollIntervalRef.current) {
+    } else if (!hasActive && pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
     }
@@ -1032,10 +1107,26 @@ export function GoalsPanel() {
               onExecute={handleExecute}
               onDismiss={handleDismiss}
               onMeasureOutcome={handleMeasureOutcome}
+              selected={selection.isSelected(execution.id)}
+              onToggleSelect={selection.toggle}
+              onFeedback={handleFeedback}
             />
           ))}
         </div>
       )}
+
+      {/* Dismissed tray */}
+      <DismissedTray refreshTrigger={dismissTrigger} />
+
+      {/* Bulk action bar */}
+      <BulkActionBar
+        selectedCount={selection.selectedCount}
+        onBatchExecute={() => void handleBatchExecute()}
+        onBatchDismiss={() => void handleBatchDismiss()}
+        onSelectHighConfidence={handleSelectHighConfidence}
+        onClearSelection={selection.deselectAll}
+        isExecuting={isBatchExecuting}
+      />
     </div>
   );
 }

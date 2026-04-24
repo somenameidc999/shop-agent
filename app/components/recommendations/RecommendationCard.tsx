@@ -13,6 +13,7 @@ export interface Recommendation {
   readonly actionPrompt?: string;
   readonly createdAt: string;
   readonly nextSteps?: readonly string[];
+  readonly queued?: boolean;
 }
 
 interface RecommendationCardProps {
@@ -124,6 +125,8 @@ export function RecommendationCard({
   const isExecuting = recommendation.status === "in_progress";
   const isCompleted = recommendation.status === "completed";
   const isFailed = recommendation.status === "failed";
+  const isQueued = !isExecuting && !isCompleted && Boolean(recommendation.queued);
+  const isActionBlocked = isExecuting || isCompleted || isQueued;
   const categoryMeta = CATEGORY_META[recommendation.category];
   const priorityMeta = PRIORITY_META[recommendation.priority];
   const statusConfig = STATUS_CONFIG[recommendation.status];
@@ -379,27 +382,27 @@ export function RecommendationCard({
           <button
             type="button"
             onClick={handleExecute}
-            disabled={isExecuting || isCompleted}
+            disabled={isActionBlocked || isQueued}
             style={{
               flex: 1,
               padding: "12px 20px",
               background:
                 isCompleted
                   ? "#F0FDF4"
-                  : isExecuting
+                  : isExecuting || isQueued
                     ? "var(--s-color-bg-fill-disabled, #e3e3e3)"
                     : "var(--s-color-bg-fill-emphasis, #303030)",
               color:
                 isCompleted
                   ? "#16A34A"
-                  : isExecuting
+                  : isExecuting || isQueued
                     ? "var(--s-color-text-disabled, #b5b5b5)"
                     : "#fff",
               border: isCompleted ? "1px solid #BBF7D0" : "none",
               borderRadius: 10,
               fontSize: 14,
               fontWeight: 600,
-              cursor: isExecuting || isCompleted ? "default" : "pointer",
+              cursor: isActionBlocked ? "default" : "pointer",
               transition: "background 0.15s, transform 0.1s",
               fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
               display: "flex",
@@ -408,12 +411,12 @@ export function RecommendationCard({
               gap: 8,
             }}
             onMouseEnter={(e) => {
-              if (!isExecuting && !isCompleted) {
+              if (!isActionBlocked) {
                 e.currentTarget.style.background = "#1a1a1a";
               }
             }}
             onMouseLeave={(e) => {
-              if (!isExecuting && !isCompleted) {
+              if (!isActionBlocked) {
                 e.currentTarget.style.background =
                   "var(--s-color-bg-fill-emphasis, #303030)";
               }
@@ -423,6 +426,11 @@ export function RecommendationCard({
               <>
                 <s-spinner size="base" accessibilityLabel="Executing" />
                 Executing...
+              </>
+            ) : isQueued ? (
+              <>
+                <s-spinner size="base" accessibilityLabel="Queued" />
+                Queued...
               </>
             ) : isCompleted ? (
               <>

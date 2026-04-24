@@ -69,10 +69,13 @@ model Goal {
   enabled            Boolean             @default(true)
   cronIntervalMins   Int                 @default(240)
   outcomeMeasureDays Int                 @default(7)
+  eventDriven        Boolean             @default(false)
+  eventTriggers      String?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   executions         GoalExecution[]
   goalExecutionLinks GoalExecutionGoal[] @relation("GoalExecutionLinks")
+  feedbacks          MerchantFeedback[]
 
   @@unique([shop, ruleKey])
 }
@@ -101,12 +104,23 @@ model GoalExecution {
   outcomeData            String?
   outcomeMeasuredAt      DateTime?
   baselineData           String?
+  dismissedAt            DateTime?
+  dismissedBy            String?
+  dryRunResult           String?
+  customParameters       String?
+  triggerSource          String?
+  webhookEventType       String?
+  escalatedAt            DateTime?
+  feedbackRating         Int?
+  feedbackNote           String?
+  compositeScore         Float?
   createdAt              DateTime            @default(now())
   updatedAt              DateTime            @updatedAt
   expiresAt              DateTime?
   executedAt             DateTime?
   goal                   Goal                @relation(fields: [goalId], references: [id])
   goalExecutionLinks     GoalExecutionGoal[]
+  feedbacks              MerchantFeedback[]
 
   @@index([shop, status])
   @@index([shop, goalId])
@@ -140,4 +154,20 @@ model BackgroundJob {
 
   @@index([status, scheduledAt])
   @@index([shop, jobType])
+}
+
+model MerchantFeedback {
+  id            String        @id @default(cuid())
+  shop          String
+  goalId        String
+  executionId   String?
+  feedbackType  String
+  rating        Int?
+  note          String?
+  createdAt     DateTime      @default(now())
+  goal          Goal          @relation(fields: [goalId], references: [id])
+  execution     GoalExecution? @relation(fields: [executionId], references: [id])
+
+  @@index([shop, goalId])
+  @@index([shop, feedbackType])
 }
