@@ -2,6 +2,7 @@ import prisma from "../db.server";
 import {
   handleGoalAnalysis,
   handleGoalExecution,
+  handleGoalMeasureOutcome,
 } from "./handlers.server";
 
 const POLL_INTERVAL_MS = 10_000;
@@ -36,6 +37,13 @@ const jobHandlers: Record<string, JobHandler> = {
   goal_execute: async (job) => {
     console.log(`[Worker] Processing goal_execute for shop ${job.shop}`);
     const result = await handleGoalExecution(
+      job.payload as { shop: string; executionId: string }
+    );
+    return result as JobResult;
+  },
+  goal_measure_outcome: async (job) => {
+    console.log(`[Worker] Processing goal_measure_outcome for shop ${job.shop}`);
+    const result = await handleGoalMeasureOutcome(
       job.payload as { shop: string; executionId: string }
     );
     return result as JobResult;
@@ -104,6 +112,22 @@ async function processJob(jobId: string): Promise<void> {
   }
 }
 
+const EXECUTION_SCOPED_JOB_TYPES = new Set(["goal_execute", "goal_measure_outcome"]);
+
+function dedupKey(job: { shop: string; jobType: string; payload: string }): string {
+  if (!EXECUTION_SCOPED_JOB_TYPES.has(job.jobType)) {
+    return `${job.shop}::${job.jobType}`;
+  }
+  try {
+    const parsed = JSON.parse(job.payload) as { executionId?: unknown };
+    const executionId =
+      typeof parsed.executionId === "string" ? parsed.executionId : "";
+    return `${job.shop}::${job.jobType}::${executionId}`;
+  } catch {
+    return `${job.shop}::${job.jobType}`;
+  }
+}
+
 async function recoverStaleJobs(): Promise<void> {
   try {
     const staleThreshold = new Date(Date.now() - STALE_JOB_THRESHOLD_MS);
@@ -123,7 +147,7 @@ async function recoverStaleJobs(): Promise<void> {
     const seen = new Set<string>();
 
     for (const job of staleJobs) {
-      const key = `${job.shop}::${job.jobType}`;
+      const key = dedupKey(job);
       if (seen.has(key)) {
         cancelIds.push(job.id);
       } else {
@@ -142,7 +166,7 @@ async function recoverStaleJobs(): Promise<void> {
     if (cancelIds.length > 0) {
       await prisma.backgroundJob.updateMany({
         where: { id: { in: cancelIds } },
-        data: { status: "failed", error: "Deduplicated stale job — another for same shop+type recovered", completedAt: new Date() },
+        data: { status: "failed", error: "Deduplicated stale job — another for same dedup key recovered", completedAt: new Date() },
       });
     }
 
@@ -179,7 +203,7 @@ async function pollJobs(): Promise<void> {
     const duplicateIds: string[] = [];
 
     for (const job of pendingJobs) {
-      const key = `${job.shop}::${job.jobType}`;
+      const key = dedupKey(job);
       if (seen.has(key)) {
         duplicateIds.push(job.id);
       } else {
@@ -191,7 +215,7 @@ async function pollJobs(): Promise<void> {
     if (duplicateIds.length > 0) {
       await prisma.backgroundJob.updateMany({
         where: { id: { in: duplicateIds } },
-        data: { status: "failed", error: "Deduplicated: another job for same shop+type exists", completedAt: new Date() },
+        data: { status: "failed", error: "Deduplicated: another job with same dedup key exists", completedAt: new Date() },
       });
       console.warn(`[Worker] Deduplicated ${duplicateIds.length} duplicate pending job(s)`);
     }

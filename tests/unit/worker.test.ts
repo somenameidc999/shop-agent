@@ -15,6 +15,7 @@ vi.mock("../../app/db.server", () => ({
 vi.mock("../../app/jobs/handlers.server", () => ({
   handleGoalAnalysis: vi.fn().mockResolvedValue({}),
   handleGoalExecution: vi.fn().mockResolvedValue({}),
+  handleGoalMeasureOutcome: vi.fn().mockResolvedValue({}),
 }));
 
 const mockPrisma = prisma as any;
@@ -152,6 +153,70 @@ describe("Background Job Worker", () => {
 
       const cancelCall = mockPrisma.backgroundJob.updateMany.mock.calls.find(
         (c: any) => c[0].where?.id?.in?.includes("dup-2") && c[0].data?.status === "failed",
+      );
+      expect(cancelCall).toBeDefined();
+      expect(cancelCall[0].data.error).toMatch(/Deduplicated/);
+    });
+
+    it("does not dedup goal_measure_outcome jobs for different executionIds on the same shop", async () => {
+      const exec1 = makeJob({
+        id: "meas-1",
+        jobType: "goal_measure_outcome",
+        payload: JSON.stringify({ shop: "test.myshopify.com", executionId: "exec-1" }),
+      });
+      const exec2 = makeJob({
+        id: "meas-2",
+        jobType: "goal_measure_outcome",
+        payload: JSON.stringify({ shop: "test.myshopify.com", executionId: "exec-2" }),
+      });
+
+      let callCount = 0;
+      mockPrisma.backgroundJob.findMany.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return Promise.resolve([]);
+        if (callCount === 2) return Promise.resolve([exec1, exec2]);
+        return Promise.resolve([]);
+      });
+      mockPrisma.backgroundJob.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.backgroundJob.findUnique.mockImplementation((args: any) => {
+        const match = [exec1, exec2].find((j) => j.id === args.where.id);
+        return Promise.resolve(match ? { ...match, status: "running" } : null);
+      });
+
+      initWorker();
+      await vi.advanceTimersByTimeAsync(100);
+
+      const cancelCalls = mockPrisma.backgroundJob.updateMany.mock.calls.filter(
+        (c: any) => c[0].data?.status === "failed" && c[0].data?.error?.includes("Deduplicated"),
+      );
+      expect(cancelCalls).toHaveLength(0);
+    });
+
+    it("still dedups goal_measure_outcome jobs with the same executionId", async () => {
+      const payload = JSON.stringify({ shop: "test.myshopify.com", executionId: "exec-dup" });
+      const dup1 = makeJob({ id: "meas-dup-1", jobType: "goal_measure_outcome", payload });
+      const dup2 = makeJob({ id: "meas-dup-2", jobType: "goal_measure_outcome", payload });
+
+      let callCount = 0;
+      mockPrisma.backgroundJob.findMany.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return Promise.resolve([]);
+        if (callCount === 2) return Promise.resolve([dup1, dup2]);
+        return Promise.resolve([]);
+      });
+      mockPrisma.backgroundJob.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.backgroundJob.findUnique.mockImplementation((args: any) => {
+        if (args.where.id === "meas-dup-1") {
+          return Promise.resolve({ ...dup1, status: "running" });
+        }
+        return Promise.resolve(null);
+      });
+
+      initWorker();
+      await vi.advanceTimersByTimeAsync(100);
+
+      const cancelCall = mockPrisma.backgroundJob.updateMany.mock.calls.find(
+        (c: any) => c[0].where?.id?.in?.includes("meas-dup-2") && c[0].data?.status === "failed",
       );
       expect(cancelCall).toBeDefined();
       expect(cancelCall[0].data.error).toMatch(/Deduplicated/);
