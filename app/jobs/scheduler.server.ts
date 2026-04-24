@@ -188,5 +188,30 @@ export async function enqueueOutcomeMeasurement(
   return job;
 }
 
+export async function enqueueDelayedOutcomeMeasurement(
+  shop: string,
+  executionId: string,
+  delayDays: number,
+) {
+  const scheduledAt = new Date(Date.now() + delayDays * 24 * 60 * 60 * 1000);
+
+  const job = await prisma.backgroundJob.create({
+    data: {
+      shop,
+      jobType: "goal_measure_outcome",
+      status: "pending",
+      payload: JSON.stringify({ shop, executionId }),
+      maxAttempts: 3,
+      scheduledAt,
+    },
+  });
+
+  console.info(
+    `[Scheduler] Enqueued delayed goal_measure_outcome job ${job.id} for execution ${executionId} (scheduled: ${scheduledAt.toISOString()})`,
+  );
+
+  return job;
+}
+
 process.on("SIGINT", shutdownScheduler);
 process.on("SIGTERM", shutdownScheduler);
