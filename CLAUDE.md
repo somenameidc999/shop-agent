@@ -38,7 +38,8 @@ Every route lives in `app/routes/`. React Router v7 convention: `loader` = GET, 
 | `api.mcp-config.ts` | `/api/mcp-config` | GET, POST, DELETE | MCP server configuration CRUD |
 | `api.chat-status.ts` | `/api/chat-status` | GET | MCP server connection status |
 | `app.tsx` | `/app` | GET (loader) | Layout: auth, MCP init, worker init |
-| `app._index.tsx` | `/app` | GET | Recommendations landing page |
+| `app._index.tsx` | `/app` | GET | Task list landing page |
+| `app.recommendations.$id.tsx` | `/app/recommendations/:id` | GET | Recommendation detail page |
 | `app.chat.tsx` | `/app/chat` | GET | Chat interface page |
 | `app.goals.tsx` | `/app/goals` | GET | Goal management page |
 | `app.settings.tsx` | `/app/settings` | GET | Settings layout |
@@ -53,6 +54,7 @@ Every route lives in `app/routes/`. React Router v7 convention: `loader` = GET, 
 
 **GET** query params:
 - `type=executions` (default): List goal executions. Supports `status`, `category`, `limit` (1-100), `offset`
+- `type=execution&id=<id>`: Get a single goal execution by ID
 - `type=goals`: List goal definitions
 - `type=job&jobId=xxx`: Get background job status
 
@@ -73,7 +75,12 @@ Every route lives in `app/routes/`. React Router v7 convention: `loader` = GET, 
 | `RecommendationsPanel.tsx` | `GET /api/goals` | Fetch executions list |
 | `RecommendationsPanel.tsx` | `POST /api/goals` | `{ action: "generate" }`, `{ action: "execute" }`, `{ action: "dismiss" }` |
 | `RecommendationsPanel.tsx` | `GET /api/goals?type=job&jobId=xxx` | Poll job status |
-| `GoalsPanel.tsx` | `GET /api/goals?type=executions` | Fetch executions |
+| `TaskList.tsx` | `GET /api/goals` | Fetch executions for landing page |
+| `TaskList.tsx` | `POST /api/goals` | `{ action: "generate" }`, `{ action: "execute" }` |
+| `TaskList.tsx` | `GET /api/goals?type=job&jobId=xxx` | Poll job status |
+| `app.recommendations.$id.tsx` | `GET /api/goals?type=execution&id=xxx` | Fetch single execution |
+| `app.recommendations.$id.tsx` | `POST /api/goals` | Execute, dismiss, measure_outcome, feedback |
+| `GoalsPanel.tsx` | `GET /api/goals?type=executions` | Fetch executions (full view) |
 | `GoalsPanel.tsx` | `POST /api/goals` | Execute/dismiss executions |
 | `GoalManagementPanel.tsx` | `GET /api/goals?type=goals` | List goals |
 | `GoalManagementPanel.tsx` | `POST /api/goals` | Create goal |
@@ -162,6 +169,16 @@ export async function action({ request }: ActionFunctionArgs) {
 - Behavioral tests: `tests/behavioral/`
 - Run: `npm test` or `npm run test:watch`
 - Test fixtures: `tests/fixtures/`
+
+## Claude Code Commands
+
+| Command | Purpose |
+|---|---|
+| `/check-wiring` | Verify all UI actions are wired to real API endpoints |
+
+## Claude Code Hooks
+
+- **PreToolUse (Write/Edit)**: Blocks creation of forbidden files (`api.recommendations`, `recommendations.server.ts`)
 
 ## Environment Variables
 
